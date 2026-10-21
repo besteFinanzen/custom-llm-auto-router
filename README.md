@@ -1,0 +1,301 @@
+# llm-auto-router
+
+OpenAI-compatible gateway that routes each request to your best available model,
+chosen by **requested intelligence tier** → **blended cost ceiling** →
+**highest-ranked eligible model**, with live rate-limit, balance and availability
+handling.
+
+```
+OpenCode ──► router/low|medium|high|orchestrator|coder
+              │  (+ plugin header x-oc-kind: forced to `low` for title/compaction/generate)
+              ▼
+        llm-auto-router :4141
+          presets → cost ceiling + floors → rank
+          ranks  ← Artificial Analysis + opencode.ai/data + models.dev (daily)
+          state  ← 429 cooldowns, token/request budgets, balance cache
+              ▼
+        e-Infra · OpenCode free · OpenRouter · DeepSeek
+```
+
+## Quick start
+
+```bash
+cd ~/llm-auto-router
+source .venv/bin/activate
+# 1. create your env file and fill in the keys you have (empty ones = provider auto-disabled)
+cp .env.example .env
+$EDITOR .env
+# 2. refresh ranks/costs (works without AA key; AA adds benchmark indices)
+python refresh.py
+# 3. run
+python gateway.py            # 127.0.0.1:4141
+#    or: uvicorn gateway:app --host 127.0.0.1 --port 4141
+```
+
+In OpenCode, register the provider `router` and copy the plugin from
+[`integrations/opencode/`](integrations/opencode/) (see that directory for the
+exact provider config). It exposes models `low`, `medium`, `high`, `orchestrator`,
+`coder`. Pick one with `/models`, `--model router/high`, or pin it in an agent
+definition:
+
+```jsonc
+"model": "router/orchestrator"   // primary agent
+"model": "router/coder"          // execution subagent
+```
+
+The companion plugin (`integrations/opencode/plugins/router-tags`) tags every
+request with `x-oc-kind`, so title/compaction calls always use the `low` tier.
+
+## Presets
+
+| Preset | Cost ceiling (blended $/1M) | Floors | Best for |
+|---|---|---|---|
+| `low` | 0 (free only) | 32k ctx | aux calls, trivial work |
+| `medium` | 0.60 | 131k ctx, tools | everyday coding |
+| `high` | 5.00 | 131k ctx, tools | hard problems |
+| `orchestrator` | 5.00 | 200k ctx, tools, agentic-weighted | primary agent that spawns subagents |
+| `coder` | 2.00 | 131k ctx, tools, coding-weighted | execution subagents |
+
+Tune everything in `catalog.yaml` (`presets.*.max_cost`, `weights`, `min_context`).
+
+## Selection algorithm
+
+1. `model` names the preset (effort parameter; `router/` prefix tolerated).
+2. `x-oc-kind` ∈ `{title, compaction, generate}` → forced to `policy.aux_preset` (`low`).
+3. Candidates = models with `enabled`, provider key present, blended cost ≤ ceiling,
+   context ≥ floor, tools if required, not cooling down, balance/capacity OK.
+4. Sort by score (weighted blend of AA intelligence/coding/agentic indices,
+   opencode.ai retention + popularity share, or `seed_rank` prior) desc, cost asc.
+5. Try in order; on 429/5xx/timeout → cooldown (honors `Retry-After`) → next model.
+6. Every decision is appended to `state/decisions.jsonl`:
+   `{ts, kind, requested, preset, rejected[], tried[], chosen, latency_ms, usage}`.
+
+Inspect live state: `curl -s localhost:4141/v1/status | python -m json.tool`.
+
+## Costs
+
+**Approximate cost per preset** — for each preset the router reports the blended
+price ($/1M tokens, 0.75·input + 0.25·output) of the model it would pick right now:
+
+- `GET /v1/models` → each preset entry has `"router": {approx_cost_per_1m,
+  approx_cost_in, approx_cost_out, top_model, max_cost, candidates}`
+- `GET /v1/status` → `preset_estimates` for all presets
+- OpenCode `/models` shows the cost *ceiling* in each preset's display name
+  (`Router Low (~free)`, `Router High (≤$5/1M)`, …)
+
+**Actual cost per request** — computed from real token usage (or a chars/4
+estimate for streams) × the chosen model's prices:
+
+- appended to every decision line: `cost_usd` + `price: {in, out}`
+- response headers: `x-router-model`, `x-router-cost-usd` (non-stream)
+- aggregated in `state/state.json` and exposed by `GET /v1/status` →
+  `costs.{today, totals, by_preset, by_model}` (today's buckets pruned after 3
+  days; totals kept forever)
+
+Optional spend caps: `balance.budget.daily_cost_usd` on a budget provider stops
+routing to it once today's recorded cost reaches the cap (e.g. e-Infra, or any
+provider without a balance API).
+
+## Live dashboard
+
+The gateway serves a self-contained live spending dashboard (no extra deps):
+
+**http://127.0.0.1:4141/dashboard** — also logged at startup:
+
+```
+llm-auto-router: dashboard at http://127.0.0.1:4141/dashboard
+```
+
+Shows, refreshing every 2 s (pause button available): today's spend / requests /
+tokens, per-provider cards with live balance chips (OpenRouter credits, DeepSeek
+balance, e-Infra budget, rate caps), spend by preset and top models for today,
+a **live per-minute spend chart** (bars = cost/minute, line = cumulative, last
+120 minutes with activity), a **sessions** table for today (requests, kind mix,
+last model, tokens, cost, last seen — click a row to filter the request feed),
+a rolling feed of the latest 40 routing decisions (kind, preset, chosen model,
+tokens, cost, latency, failovers), plus cooldown/rank-freshness alerts. Backed by
+`GET /v1/spend` (the same JSON if you want to script it; includes `sessions` and
+`timeline`).
+
+Session grouping comes from the `x-oc-session` header, set by the bundled
+OpenCode plugin (`integrations/opencode/plugins/router-tags`) from `event.sessionID`.
+Requests without it group under `(unknown)`.
+
+**Session titles:** session IDs are resolved to their real OpenCode titles via
+`opencode api get /api/session` (the local background service; the CLI handles
+discovery/auth). The gateway refreshes lazily — max once a minute, in a
+background task, whenever `/v1/spend` sees unknown IDs — and caches results in
+`state/titles.json`. Titles show up in the sessions table, the request feed,
+and the filter chip. A new session gets its title only after OpenCode's aux
+`title` call completes, so it appears on a later refresh. Disable with
+`ROUTER_TITLES_CMD=` (empty), or point that env var at a custom command.
+
+Note: the per-preset/per-model/session *today* buckets and minute buckets start
+accumulating when this feature is first deployed; lifetime `totals` are unaffected.
+Restart the gateway after upgrading so `/v1/spend` exposes the new fields.
+
+## Data refresh
+
+`refresh.py` (run daily via the provided timer) first **discovers** each
+provider's model list, then merges three free quality/cost sources.
+
+**Discovery** — every *enabled* provider is asked for its `/models` list
+(OpenCode uses its separate list endpoint via `models_url`). Results land in
+`state/discovered.json`; curated `catalog.yaml` entries always win on id
+conflict, and `blocklist:` vetoes specific ids. Discovered models are enabled
+automatically — preset ceilings, context/tool floors, balances and cooldowns
+decide what actually gets routed. Non-chat ids (embeddings, audio, moderation…)
+are filtered by `policy.discovery.exclude_patterns`. Models whose price is
+unknown default to `999` so ceilings exclude them.
+
+| Source | Used for | Notes |
+|---|---|---|
+| [Artificial Analysis](https://artificialanalysis.ai) Data API | intelligence / coding / agentic indices | free key (`AA_API_KEY`), 100 req/day, 1 request per refresh; **attribution required** |
+| [opencode.ai/data](https://opencode.ai/data/index.json) | weekly retention + usage share | no key, no quota, daily updates; popularity intentionally low weight |
+| [models.dev](https://models.dev/api.json) | prices, context limits, tool support | no key; overrides catalog seeds where matched |
+
+Unmatched models keep their `seed_rank` prior and are listed under `unmatched`
+in `state/ranks.json` and in `/v1/status`. Fix by adding `aa_slug` / `oc_id` /
+`mdev_id` to that model in `catalog.yaml`.
+
+Manual vetoes always win: `rank_override` and `cost_override` per model.
+
+### Reviewing fuzzy matches
+
+Names are matched to benchmark/usage data in tiers: explicit ids → exact →
+similarity → model family. Family and ambiguous guesses are recorded in
+`state/ranks.json` → `review` (also surfaced in `/v1/status`) with confidence
+and alternatives, and printed by `refresh.py`. To pin a match, set `aa_slug` /
+`oc_id` in `catalog.yaml` — an explicit id disables fuzzy matching for that
+source.
+
+## Balance & availability
+
+| Provider | Mechanism |
+|---|---|
+| e-Infra | no known API → local daily token budget (`budget.daily_tokens`) |
+| OpenCode free | local daily request cap (`rate_only.daily_requests`); key required even for free models |
+| OpenRouter | `GET /auth/key` credits check (+ price data from models.dev) |
+| DeepSeek | `GET /user/balance` real balance check (`min_balance`) |
+
+API-based checks are cached (`policy.balance_cache_seconds`), fail open, and
+exhausted providers are excluded with an explicit reason in the decision log.
+Availability is enforced passively from real outcomes (429/5xx/timeout → cooldown).
+
+## Endpoints
+
+| Route | Purpose |
+|---|---|
+| `POST /v1/chat/completions` | routing entrypoint (OpenAI-compatible, streaming supported) |
+| `GET /v1/models` | exposes the presets + approximate cost metadata |
+| `GET /v1/status` | providers, balances, usage, **costs**, preset estimates, cooldowns, rank freshness, **discovery** snapshot |
+| `GET /v1/spend` | live spending snapshot: today, by provider/preset/model, recent decisions, cooldowns |
+| `GET /dashboard` | live spending dashboard (HTML); `GET /` redirects here |
+| `POST /v1/reload` | reload `catalog.yaml` + `state/ranks.json` |
+| `GET /healthz` | liveness |
+
+Debug bypass: `"model": "direct/<provider>/<upstream>"`, e.g. `direct/e_infra/kimi`.
+
+## Integrate with your harness
+
+The gateway speaks the OpenAI **chat completions** API, so anything that can be
+pointed at a custom OpenAI-compatible base URL can use it. The `model` field is a
+**preset** (`low`, `medium`, `high`, `orchestrator`, `coder`), not an upstream
+model id; `router/<preset>` is also accepted. The gateway needs no auth of its
+own, so pass any non-empty key from clients that require one.
+
+| Harness | How |
+|---|---|
+| **OpenCode** | Use the bundled config + plugin in [`integrations/opencode/`](integrations/opencode/) — registers the presets as models and tags aux calls. |
+| **Continue / Cline / Roo** | Add an OpenAI-compatible provider with base URL `http://127.0.0.1:4141/v1`, any API key, and select a preset as the model. |
+| **Cursor** | Settings → Models → OpenAI API key → *Override Base URL* `http://127.0.0.1:4141/v1`. |
+| **Aider** | `aider --openai-api-base http://127.0.0.1:4141/v1 --openai-api-key dummy --model medium` |
+| **OpenAI SDK (Python)** | `OpenAI(base_url="http://127.0.0.1:4141/v1", api_key="dummy")`, then `model="medium"`. |
+| **curl** | `curl -s http://127.0.0.1:4141/v1/chat/completions -H 'content-type: application/json' -d '{"model":"medium","messages":[{"role":"user","content":"hi"}]}'` |
+
+Optional headers for finer control:
+
+- `x-oc-kind: title | compaction | generate` — force the cheap `low` preset for
+  auxiliary calls regardless of the requested tier.
+- `x-oc-session: <id>` — group spend per session on the dashboard.
+
+## Install as a user service
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/llm-auto-router.service deploy/llm-auto-router-refresh.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now llm-auto-router.service llm-auto-router-refresh.timer
+systemctl --user status llm-auto-router.service
+```
+
+The units assume the checkout lives at `~/llm-auto-router` (they use systemd's
+`%h` for your home directory); edit `WorkingDirectory`/`ExecStart` if it lives
+elsewhere.
+
+## Tests
+
+```bash
+.venv/bin/python -m pytest -q     # 44 tests, scriptable mock upstreams
+```
+
+## Caveats
+
+- Tier ceilings and weights are policy seeds — tune with real experience.
+- OpenCode free-tier quotas are undisclosed; the daily cap is a conservative guess.
+- e-Infra is budget-accounted, not true balance-checked (no known API).
+- DeepSeek upstream ids are assumed to alias the current v4 models; verify once the key exists.
+- Fuzzy matches (especially e-Infra aliases and `family` guesses) are heuristics — review the
+  `review` list after each refresh and pin `aa_slug`/`oc_id` where they are wrong.
+- Discovery lists provider ids as-is, including experimental variants and `*-latest`
+  aliases; use `blocklist:` if any should never be routed.
+- `state/` holds cooldowns, usage, balances and the decision log; safe to delete to reset.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). By submitting a contribution you agree it
+is licensed under the same terms as the project (AGPL-3.0-or-later) and that you
+accept the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and for keeping
+secrets (`.env`) out of the repository.
+
+## License
+
+Licensed under the **GNU Affero General Public License v3.0 or later**
+(`AGPL-3.0-or-later`) — see [LICENSE](LICENSE). This is an **OSI-approved**,
+**copyleft** license:
+
+- derivative works must be distributed under the same terms (AGPL-3.0 §5), and
+- the copyright, license and attribution notices must be preserved (AGPL-3.0 §4).
+
+In practice that means a fork of this router cannot be shipped as a closed
+product: publish the source, keep the license and the author credit, and you
+are free to do whatever else you like with it.
+
+> Before publishing, replace `<YOUR NAME>` in `LICENSE` with the copyright holder.
+
+**Network use is covered too.** This project is a network service, so the AGPL's
+section 13 applies: if you modify it and let other users interact with it over
+a network, you must also offer those users the source of your modified version.
+A plain GPL would have left that gap — running a modified fork as a service
+without publishing anything.
+
+## Acceptable Use
+
+The license above deliberately contains no field-of-use restrictions, so that
+the project stays OSI-approved open source. What follows is therefore a
+**statement of the maintainers' expectations — not a license condition**. It
+does not limit anyone's legal rights under the AGPL; it is simply what we ask
+for, and what we expect from contributors:
+
+- no war, armed conflict, or military activities;
+- no production, distribution, or trafficking of illegal drugs;
+- no violations of human rights;
+- no terrorism or support of terrorist activity.
+
+If you use this project in a way that clashes with the above, we would rather
+hear about it than find out later. Please also read the
+[Code of Conduct](CODE_OF_CONDUCT.md).

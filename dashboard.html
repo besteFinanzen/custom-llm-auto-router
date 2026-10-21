@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-auto-router · spend</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#121823; --panel2:#0f141d; --line:#1f2937;
+    --fg:#e6edf3; --muted:#8b949e; --green:#3fb950; --blue:#58a6ff;
+    --amber:#d29922; --purple:#bc8cff; --pink:#f778ba; --red:#f85149; --cyan:#39d2c0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,14,20,.92);backdrop-filter:blur(6px);z-index:5}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600}
+  .brand .sub{color:var(--muted);font-weight:400}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 8px var(--red);transition:.3s}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .right{display:flex;align-items:center;gap:12px}
+  .muted{color:var(--muted)}
+  button{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
+  button:hover{border-color:#334155}
+  main{padding:18px 22px 40px;max-width:1280px;margin:0 auto}
+  .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat label{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+  .stat b{display:block;font-size:26px;margin:2px 0;font-weight:600}
+  .stat .muted{font-size:12px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-bottom:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .card .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .card .name{font-weight:600}
+  .card .cost{font-size:20px;font-weight:600}
+  .card .row{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-top:3px}
+  .pill{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:1px 7px;color:var(--muted)}
+  .pill.off{color:var(--red);border-color:#4b1f22}
+  .pill.ok{color:var(--green);border-color:#1f4b26}
+  .grid{display:grid;grid-template-columns:1fr 1.4fr;gap:12px;margin-bottom:14px}
+  @media (max-width:900px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+  .panel h2{font-size:12px;margin:0 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:600}
+  .bar-row{display:grid;grid-template-columns:150px 1fr 92px;align-items:center;gap:10px;margin:7px 0;font-size:13px}
+  .bar-row .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:4px;background:var(--blue);transition:width .4s}
+  .bar-row .val{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  td{padding:5px 8px;border-bottom:1px solid #161e2b;white-space:nowrap;font-variant-numeric:tabular-nums}
+  td.model{max-width:340px;overflow:hidden;text-overflow:ellipsis}
+  .table-wrap{overflow-x:auto}
+  .badge{font-size:10px;border-radius:4px;padding:1px 6px;border:1px solid var(--line);color:var(--muted)}
+  .b-low{color:var(--green);border-color:#1f4b26}
+  .b-medium{color:var(--blue);border-color:#1f3a5c}
+  .b-high{color:var(--amber);border-color:#4b3a1f}
+  .b-orchestrator{color:var(--purple);border-color:#3d2b52}
+  .b-coder{color:var(--pink);border-color:#4b1f37}
+  .b-direct{color:var(--muted)}
+  .b-title,.b-compaction,.b-generate{color:var(--cyan);border-color:#1f4642}
+  .ok{color:var(--green)} .warn{color:var(--amber)} .err{color:var(--red)}
+  .chart-panel{margin-bottom:14px}
+  .chart-panel h2{display:flex;justify-content:space-between;gap:12px}
+  .chart-panel h2 .muted{text-transform:none;letter-spacing:0;font-weight:400}
+  .chart-panel svg rect{transition:height .3s,y .3s}
+  .srow{cursor:pointer}
+  .srow:hover td{background:#161e2b}
+  .srow.sel td{background:#1b2431}
+  .srow.sel td:first-child{box-shadow:inset 2px 0 0 var(--cyan)}
+  .filter-note{color:var(--cyan);text-transform:none;letter-spacing:0;font-weight:400;margin-left:6px}
+  footer{padding:14px 2px 0;font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="dot"></span> llm-auto-router <span class="sub">· live spend &amp; sessions</span></div>
+  <div class="right">
+    <span class="muted" id="updated">connecting…</span>
+    <button id="pause">pause</button>
+  </div>
+</header>
+<main>
+  <section class="hero">
+    <div class="stat"><label>spend today</label><b id="today-cost">—</b><span class="muted" id="today-meta">&nbsp;</span></div>
+    <div class="stat"><label>requests today</label><b id="today-reqs">—</b><span class="muted" id="reqs-meta">&nbsp;</span></div>
+    <div class="stat"><label>tokens today</label><b id="today-tokens">—</b><span class="muted" id="tok-meta">&nbsp;</span></div>
+    <div class="stat"><label>models</label><b id="models-count">—</b><span class="muted" id="models-meta">&nbsp;</span></div>
+  </section>
+
+  <section class="cards" id="providers"></section>
+
+  <section class="panel chart-panel">
+    <h2><span>spend today · live per-minute</span><span class="muted" id="chart-meta"></span></h2>
+    <div id="chart"></div>
+  </section>
+
+  <section class="grid">
+    <div class="panel"><h2>spend by preset · today</h2><div id="presets"></div></div>
+    <div class="panel"><h2>top models · today</h2><div id="models"></div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <h2>sessions · today <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">click a row to filter requests</span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>session</th><th>reqs</th><th>kinds</th><th>last model</th><th>tokens</th><th>cost</th><th>last seen</th></tr></thead>
+        <tbody id="sessions"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>recent requests <span id="recent-filter" class="filter-note"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>time</th><th>session</th><th>kind</th><th>preset</th><th>model</th><th>tokens</th><th>cost</th><th>latency</th><th>status</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>real usage when reported; streaming requests estimated at chars/4 · refresh 2s · sessions from x-oc-session</span>
+    <span id="alerts"></span>
+  </footer>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const PRESET_COLORS = {low:'#3fb950', medium:'#58a6ff', high:'#d29922', orchestrator:'#bc8cff', coder:'#f778ba', direct:'#8b949e'};
+let paused = false;
+
+const money = v => { v = +v || 0;
+  if (v === 0) return '$0.00';
+  if (v >= 1) return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(4);
+  return '$' + v.toFixed(6);
+};
+const tok = n => { n = +n || 0;
+  return n >= 1e6 ? (n/1e6).toFixed(2) + 'M' : n >= 1e3 ? (n/1e3).toFixed(1) + 'k' : String(n);
+};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clock = ts => new Date(ts * 1000).toLocaleTimeString([], {hour12:false});
+const shortSession = s => (!s || s === '(unknown)') ? '(unknown)' : (s.length > 14 ? s.slice(0, 14) + '…' : s);
+let sessionFilter = null;
+let lastData = null;
+
+function barRow(label, sub, value, max, color, right) {
+  const pct = max > 0 ? Math.max(2, Math.round(value / max * 100)) : 0;
+  return `<div class="bar-row">
+    <span class="lbl" title="${esc(label)}">${esc(label)} <span class="muted">${esc(sub)}</span></span>
+    <span class="bar"><i style="width:${pct}%;background:${color}"></i></span>
+    <span class="val">${right}</span>
+  </div>`;
+}
+
+function renderProviders(d) {
+  $('#providers').innerHTML = Object.entries(d.providers).map(([pid, p]) => {
+    const t = p.today || {};
+    const bal = p.balance || {};
+    let balTxt = '';
+    if (bal.type === 'openrouter' && bal.limit_remaining != null) balTxt = 'credits ' + money(bal.limit_remaining);
+    else if (bal.type === 'deepseek' && bal.total_balance != null) balTxt = 'balance ' + money(bal.total_balance);
+    else if (bal.type === 'budget' && bal.cap) balTxt = 'budget ' + tok(bal.used) + '/' + tok(bal.cap);
+    else if (bal.type === 'rate_only' && bal.cap) balTxt = 'reqs ' + bal.used + '/' + bal.cap;
+    else if (bal.assumed) balTxt = 'balance assumed';
+    const total = p.total || {};
+    return `<div class="card">
+      <div class="top"><span class="name">${esc(pid)}</span>
+        <span class="pill ${p.enabled ? 'ok' : 'off'}">${p.enabled ? 'on' : 'off'}</span></div>
+      <div class="cost ${t.cost > 0 ? 'warn' : 'ok'}">${money(t.cost)}</div>
+      <div class="row"><span>${t.reqs || 0} reqs · ${tok((t.in || 0) + (t.out || 0))} tok</span><span>${esc(balTxt)}</span></div>
+      <div class="row"><span class="muted">lifetime ${money(total.cost)}</span><span class="muted">${total.reqs || 0} reqs</span></div>
+    </div>`;
+  }).join('');
+}
+
+function renderPresets(d) {
+  const entries = Object.entries(d.presets_today || {}).sort((a, b) => b[1].cost - a[1].cost);
+  if (!entries.length) { $('#presets').innerHTML = '<div class="muted">no requests yet today</div>'; return; }
+  const max = Math.max(...entries.map(e => e[1].cost));
+  $('#presets').innerHTML = entries.map(([name, v]) =>
+    barRow(name, `· ${v.reqs} reqs`, v.cost, max, PRESET_COLORS[name] || '#8b949e', money(v.cost))
+  ).join('');
+}
+
+function renderModels(d) {
+  const entries = Object.entries(d.models_today || {})
+    .sort((a, b) => (b[1].cost - a[1].cost) || (b[1].reqs - a[1].reqs)).slice(0, 12);
+  if (!entries.length) { $('#models').innerHTML = '<div class="muted">no requests yet today</div>'; return; }
+  const max = Math.max(...entries.map(e => e[1].cost || 0)) || 1;
+  $('#models').innerHTML = entries.map(([name, v]) =>
+    barRow(name, `· ${v.reqs} reqs`, v.cost, max, '#39d2c0', money(v.cost))
+  ).join('');
+}
+
+function renderChart(d) {
+  const tl = d.timeline || [];
+  const el = $('#chart');
+  if (!tl.length) { el.innerHTML = '<div class="muted">no requests yet today</div>'; $('#chart-meta').textContent = ''; return; }
+  const toMin = s => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+  const last = toMin(tl[tl.length - 1].t);
+  const start = Math.max(toMin(tl[0].t), last - 119);
+  const byMin = new Map(tl.map(p => [toMin(p.t), p]));
+  const slots = [];
+  for (let m = start; m <= last; m++) {
+    const key = String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+    const p = byMin.get(m);
+    slots.push({t: key, cost: p ? p.cost : 0, reqs: p ? p.reqs : 0});
+  }
+  const maxC = Math.max(...slots.map(s => s.cost), 1e-6);
+  const W = 1000, H = 150, bw = W / slots.length;
+  let bars = '', cum = 0;
+  const pts = [];
+  slots.forEach((s, i) => {
+    const h = Math.round((s.cost / maxC) * (H - 24));
+    const x = i * bw, y = H - 16 - h;
+    bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h}"
+      fill="${s.cost > 0 ? '#d29922' : '#1b2431'}"><title>${s.t} · ${money(s.cost)} · ${s.reqs} reqs</title></rect>`;
+    cum += s.cost;
+    pts.push(`${(x + bw / 2).toFixed(1)},${(H - 16 - (cum / Math.max(cum, 1e-9)) * (H - 24)).toFixed(1)}`);
+  });
+  const line = `<polyline fill="none" stroke="#39d2c0" stroke-width="1.6" points="${pts.join(' ')}"/>`;
+  const axis = `<text x="2" y="${H - 3}" fill="#8b949e" font-size="10">${slots[0].t}</text>
+    <text x="${W - 2}" y="${H - 3}" text-anchor="end" fill="#8b949e" font-size="10">${slots[slots.length - 1].t}</text>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:150px;display:block">${bars}${line}${axis}</svg>`;
+  const total = slots.reduce((a, s) => a + s.reqs, 0);
+  $('#chart-meta').textContent = `peak ${money(maxC)}/min · ${total} reqs in window · bars = per minute, line = cumulative`;
+}
+
+function sessionTitle(d, id) {
+  const hit = (d.sessions || []).find(s => (s.session || '(unknown)') === id);
+  return (hit && hit.title) || null;
+}
+
+function renderSessions(d) {
+  const entries = d.sessions || [];
+  const body = $('#sessions');
+  if (!entries.length) { body.innerHTML = '<tr><td colspan="7" class="muted">no requests yet today</td></tr>'; return; }
+  body.innerHTML = entries.map(s => {
+    const kinds = Object.entries(s.kinds || {}).map(([k, n]) => `${k}:${n}`).join(' ');
+    const active = sessionFilter && sessionFilter === (s.session || '(unknown)');
+    const label = s.title || shortSession(s.session);
+    return `<tr class="srow${active ? ' sel' : ''}" data-session="${esc(s.session || '(unknown)')}">
+      <td class="model" title="${esc(s.session || '')}${s.title ? ' · id' : ''}">${esc(label)}</td>
+      <td>${s.reqs || 0}</td>
+      <td class="muted">${esc(kinds)}</td>
+      <td class="model" title="${esc(s.last_model || '')}">${esc(s.last_model || '—')}</td>
+      <td>${tok((s.in || 0) + (s.out || 0))}</td>
+      <td class="${s.cost > 0 ? 'warn' : ''}">${money(s.cost)}</td>
+      <td class="muted">${s.last_ts ? clock(s.last_ts) : '—'}</td>
+    </tr>`;
+  }).join('');
+  body.querySelectorAll('.srow').forEach(tr => {
+    tr.onclick = () => {
+      const key = tr.dataset.session;
+      sessionFilter = sessionFilter === key ? null : key;
+      if (lastData) render(lastData);
+    };
+  });
+}
+
+function renderRecent(d) {
+  const all = d.recent || [];
+  const rows = all.filter(r => !sessionFilter || (r.session || '(unknown)') === sessionFilter);
+  const note = $('#recent-filter');
+  const filterLabel = sessionFilter ? (sessionTitle(d, sessionFilter) || shortSession(sessionFilter)) : null;
+  note.innerHTML = sessionFilter
+    ? `filtered: ${esc(filterLabel)} · <a href="#" id="clear-filter" style="color:inherit">clear</a>`
+    : '';
+  const cf = $('#clear-filter');
+  if (cf) cf.onclick = e => { e.preventDefault(); sessionFilter = null; if (lastData) render(lastData); };
+  const html = rows.map(r => {
+    const tried = r.tried || [];
+    const model = r.chosen || (tried.length ? tried[tried.length - 1].id : '—');
+    const usage = r.usage || {};
+    const est = usage.estimated ? ' <span class="muted">est</span>' : '';
+    const failovers = tried.filter(t => t.status && t.status !== 'ok').length;
+    const status = r.error
+      ? `<span class="err">error</span>`
+      : failovers > 0 ? `<span class="warn">↻${failovers}</span>` : `<span class="ok">ok</span>`;
+    const kind = r.kind || 'primary';
+    const preset = r.preset || 'direct';
+    return `<tr>
+      <td class="muted">${clock(r.ts || 0)}</td>
+      <td class="muted" title="${esc(r.session || '')}">${esc(sessionTitle(d, r.session || '(unknown)') || shortSession(r.session))}</td>
+      <td><span class="badge b-${esc(kind)}">${esc(kind)}</span></td>
+      <td><span class="badge b-${esc(preset)}">${esc(preset)}</span></td>
+      <td class="model" title="${esc(model)}">${esc(model)}</td>
+      <td>${tok((usage.in || 0) + (usage.out || 0))}${est}</td>
+      <td class="${r.cost_usd > 0 ? 'warn' : ''}">${money(r.cost_usd)}</td>
+      <td>${r.latency_ms != null ? r.latency_ms + ' ms' : '—'}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join('');
+  $('#recent').innerHTML = html
+    || `<tr><td colspan="9" class="muted">${all.length ? 'no requests for this session in the tail' : 'no requests yet'}</td></tr>`;
+}
+
+function render(d) {
+  lastData = d;
+  const t = d.today || {};
+  $('#today-cost').textContent = money(t.cost);
+  $('#today-meta').textContent = (t.reqs || 0) + ' requests';
+  $('#today-reqs').textContent = String(t.reqs || 0);
+  $('#reqs-meta').textContent = (d.uptime_s != null ? 'up ' + Math.floor(d.uptime_s / 60) + 'm' : '');
+  $('#today-tokens').textContent = tok((t.in || 0) + (t.out || 0));
+  $('#tok-meta').textContent = tok(t.in || 0) + ' in · ' + tok(t.out || 0) + ' out';
+  const disc = d.discovery || {};
+  $('#models-count').textContent = disc.models != null ? disc.models : '—';
+  $('#models-meta').textContent = disc.fetched_at ? 'discovery ' + String(disc.fetched_at).slice(0, 16).replace('T', ' ') : 'no discovery yet';
+  renderProviders(d);
+  renderChart(d);
+  renderPresets(d);
+  renderModels(d);
+  renderSessions(d);
+  renderRecent(d);
+  const cools = Object.keys(d.cooldowns || {}).length;
+  const alerts = [];
+  if (cools) alerts.push(`<span class="warn">${cools} model(s) cooling down</span>`);
+  if (d.ranks && !d.ranks.fetched_at) alerts.push('<span class="warn">ranks not refreshed</span>');
+  $('#alerts').innerHTML = alerts.join(' · ');
+  document.title = money(t.cost) + ' · llm-auto-router';
+}
+
+function online(on) {
+  $('#dot').classList.toggle('on', on);
+  if (!on) $('#updated').textContent = 'gateway unreachable';
+}
+
+async function tick() {
+  if (paused) return;
+  try {
+    const r = await fetch('/v1/spend', {cache: 'no-store'});
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    online(true);
+    $('#updated').textContent = 'updated ' + new Date().toLocaleTimeString([], {hour12: false});
+  } catch (e) { online(false); }
+}
+
+$('#pause').onclick = () => {
+  paused = !paused;
+  $('#pause').textContent = paused ? 'resume' : 'pause';
+  $('#updated').textContent = paused ? 'paused' : 'resuming…';
+  if (!paused) tick();
+};
+
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh llm-auto-router model ranks and costs
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/llm-auto-router
+ExecStart=%h/llm-auto-router/.venv/bin/python refresh.py
+TimeoutStartSec=300

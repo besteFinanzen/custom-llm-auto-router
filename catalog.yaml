@@ -1,0 +1,114 @@
+# llm-auto-router catalog
+#
+# quality ranks: refreshed automatically from Artificial Analysis + opencode.ai/data
+# (refresh.py); the seeds below are priors used until/unmatched. rank_override
+# always wins. costs/limits refreshed from models.dev; cost_override wins.
+#
+# id mappings per model (fill in to unlock automatic data):
+#   aa_slug  — Artificial Analysis model slug (see https://artificialanalysis.ai/models)
+#   oc_id    — model id in https://opencode.ai/data/index.json
+
+policy:
+  aux_kinds: [title, compaction, generate]  # x-oc-kind values forced to aux_preset
+  aux_preset: low
+  cooldown_seconds: 60          # after 429/5xx/timeout when no Retry-After
+  cooldown_max_seconds: 900     # cap for Retry-After
+  balance_cache_seconds: 3600
+  request_timeout_seconds: 300
+  max_failovers: 3              # upstreams tried per request
+  discovery:                    # provider model discovery (GET {base}/models)
+    enabled: true
+    seed_rank: 30               # prior for discovered models until ranks match
+    exclude_patterns: [embed, whisper, tts, moderation, rerank, dall-e, stable-diffusion, flux, audio]
+
+blocklist: []                   # model ids never routed (curated or discovered)
+
+providers:
+  e_infra:
+    base_url: https://llm.ai.e-infra.cz/v1
+    api_key_env: E_INFRA_API_KEY
+    discovery: {default_cost_in: 0, default_cost_out: 0, default_context: 131072}
+    balance:
+      type: budget               # no known balance API -> budget accounting
+      daily_tokens: 2000000      # seed cap (input+output), tune to your quota
+
+  opencode:
+    base_url: https://opencode.ai/inference/openai/v1
+    models_url: https://opencode.ai/inference/v1/models   # list endpoint differs from chat base
+    api_key_env: OPENCODE_API_KEY   # required even for free models (else 403)
+    discovery: {default_cost_in: 0, default_cost_out: 0, default_context: 131072}
+    balance:
+      type: rate_only
+      daily_requests: 200          # seed cap; free-tier quotas are undisclosed
+
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    discovery: {default_cost_in: 999, default_cost_out: 999, default_context: 32768}
+    balance:
+      type: openrouter             # GET /auth/key (credits); zero-cost models skip it
+
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    discovery: {default_cost_in: 999, default_cost_out: 999, default_context: 65536}
+    balance:
+      type: deepseek               # GET /user/balance
+      min_balance: 0.10            # stop routing below this remaining balance
+
+# presets: virtual models exposed to OpenCode. max_cost is a blended $/1M
+# ceiling (0.75*input + 0.25*output); 0 = free models only.
+presets:
+  low:          # aux calls (title/compaction) and cheap work
+    max_cost: 0.0
+    min_context: 32768
+    require_tools: false
+    weights: {aa_intelligence: 0.35, aa_coding: 0.25, aa_agentic: 0.10, oc_retention: 0.20, oc_popularity: 0.10}
+  medium:
+    max_cost: 0.60
+    min_context: 131072
+    require_tools: true
+    weights: {aa_intelligence: 0.30, aa_coding: 0.35, aa_agentic: 0.15, oc_retention: 0.15, oc_popularity: 0.05}
+  high:
+    max_cost: 5.0
+    min_context: 131072
+    require_tools: true
+    weights: {aa_intelligence: 0.35, aa_coding: 0.35, aa_agentic: 0.20, oc_retention: 0.10}
+  orchestrator: # primary agent driving the session, spawning subagents
+    max_cost: 5.0
+    min_context: 200000
+    require_tools: true
+    weights: {aa_agentic: 0.40, aa_intelligence: 0.30, aa_coding: 0.15, oc_retention: 0.15}
+  coder:        # execution subagents
+    max_cost: 2.0
+    min_context: 131072
+    require_tools: true
+    weights: {aa_coding: 0.60, aa_agentic: 0.20, aa_intelligence: 0.10, oc_retention: 0.10}
+
+models:
+  # ---- e-Infra (academic endpoint, seed cost 0) ------------------------------
+  - {id: e-infra/kimi,             provider: e_infra, upstream: kimi,             cost_in: 0, cost_out: 0, seed_rank: 60, context: 1048576, output: 49152, tools: true, image: true,  aa_slug: null, oc_id: null}
+  - {id: e-infra/glm,              provider: e_infra, upstream: glm,              cost_in: 0, cost_out: 0, seed_rank: 55, context: 1048576, output: 65536, tools: true, image: false, aa_slug: null, oc_id: null}
+  - {id: e-infra/deepseek-thinking,provider: e_infra, upstream: deepseek-thinking,cost_in: 0, cost_out: 0, seed_rank: 52, context: 1048576, output: 65536, tools: true, image: false, aa_slug: null, oc_id: null}
+  - {id: e-infra/deepseek,         provider: e_infra, upstream: deepseek,         cost_in: 0, cost_out: 0, seed_rank: 48, context: 1048576, output: 65536, tools: true, image: false, aa_slug: null, oc_id: null}
+  - {id: e-infra/coder,            provider: e_infra, upstream: coder,            cost_in: 0, cost_out: 0, seed_rank: 46, context: 262144,  output: 49152, tools: true, image: true,  aa_slug: null, oc_id: null}
+  - {id: e-infra/mini,             provider: e_infra, upstream: mini,             cost_in: 0, cost_out: 0, seed_rank: 25, context: 131072,  output: 32768, tools: true, image: false, aa_slug: openai/gpt-oss-120b, oc_id: null}
+
+  # ---- OpenCode free models (need OPENCODE_API_KEY even though cost 0) -------
+  - {id: opencode/deepseek-v4.1-flash-free, provider: opencode, upstream: deepseek-v4.1-flash-free, cost_in: 0, cost_out: 0, seed_rank: 36, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4.1-flash}
+  - {id: opencode/minimax-m3.1-flash-free,  provider: opencode, upstream: minimax-m3.1-flash-free,  cost_in: 0, cost_out: 0, seed_rank: 34, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: minimax-m3.1-flash}
+  - {id: opencode/glm-5.3-flash-free,       provider: opencode, upstream: glm-5.3-flash-free,       cost_in: 0, cost_out: 0, seed_rank: 32, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: glm-5.3-flash}
+  - {id: opencode/mimo-v2.6-flash-free,     provider: opencode, upstream: mimo-v2.6-flash-free,     cost_in: 0, cost_out: 0, seed_rank: 30, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: mimo-v2.6-flash}
+  - {id: opencode/beam-free,                provider: opencode, upstream: beam-free,                cost_in: 0, cost_out: 0, seed_rank: 26, context: 1048576, output: 131072, tools: true, image: false, aa_slug: null, oc_id: beam}
+  - {id: opencode/big-pickle,               provider: opencode, upstream: big-pickle,               cost_in: 0, cost_out: 0, seed_rank: 22, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: null}
+
+  # ---- OpenRouter (key covers free + paid; costs refreshed from models.dev) --
+  - {id: openrouter/minimax-m3.1-flash-free, provider: openrouter, upstream: minimax/minimax-m3.1-flash:free, cost_in: 0, cost_out: 0, seed_rank: 33, context: 1000000, output: 524288, tools: true, image: false, aa_slug: null, oc_id: minimax-m3.1-flash}
+  - {id: openrouter/free,        provider: openrouter, upstream: openrouter/free,              cost_in: 0, cost_out: 0, seed_rank: 20, context: 200000, output: 8000,   tools: true, image: false, aa_slug: null, oc_id: null}
+  - {id: openrouter/deepseek-v4.1-flash, provider: openrouter, upstream: deepseek/deepseek-v4.1-flash, cost_in: 0.049, cost_out: 0.375, seed_rank: 52, context: 1048576, output: 943718, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4.1-flash}
+  - {id: openrouter/deepseek-v4-pro,     provider: openrouter, upstream: deepseek/deepseek-v4-pro,     cost_in: 0.95526, cost_out: 1.91052, seed_rank: 62, context: 1048576, output: 384000, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4-pro}
+
+  # ---- DeepSeek direct (paid; real balance check via /user/balance) ---------
+  # upstream ids are the DeepSeek API ids; mdev_id maps to models.dev for price/limit refresh
+  - {id: deepseek/chat,     provider: deepseek, upstream: deepseek-chat,     mdev_id: deepseek-v4-flash, cost_in: 0.15, cost_out: 0.60, seed_rank: 50, context: 1048576, output: 393216, tools: true, image: false, aa_slug: null, oc_id: null}
+  - {id: deepseek/reasoner, provider: deepseek, upstream: deepseek-reasoner, mdev_id: deepseek-v4-pro,   cost_in: 0.66, cost_out: 1.98, seed_rank: 63, context: 1048576, output: 393216, tools: true, image: false, aa_slug: null, oc_id: null}

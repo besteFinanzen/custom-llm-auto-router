@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh of llm-auto-router ranks and costs
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,53 @@
+// Example OpenCode configuration for llm-auto-router.
+//
+// Merge the `providers.router` block (and the plugin entry) into your own
+// ~/.config/opencode/opencode.jsonc. Adjust the baseURL if the gateway runs on
+// another host or port (default: http://127.0.0.1:4141/v1).
+//
+// The gateway is OpenAI-compatible and needs no auth; OpenCode still sends its
+// own credentials through, which is fine. Upstream provider keys are configured
+// in the gateway's .env, not here.
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // `./plugins/router-tags` is relative to ~/.config/opencode — copy the bundled
+  // plugin from integrations/opencode/plugins/router-tags there.
+  "plugins": ["./plugins/router-tags"],
+
+  "providers": {
+    "router": {
+      "name": "Auto Router (llm-auto-router)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:4141/v1"
+      },
+      "models": {
+        "low": {
+          "name": "Router Low (~free)",
+          "limit": { "context": 131072, "output": 32000 },
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] }
+        },
+        "medium": {
+          "name": "Router Medium (<=$0.60/1M)",
+          "limit": { "context": 131072, "output": 32000 },
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] }
+        },
+        "high": {
+          "name": "Router High (<=$5/1M)",
+          "limit": { "context": 200000, "output": 32000 },
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] }
+        },
+        "orchestrator": {
+          "name": "Router Orchestrator (<=$5/1M, agentic)",
+          "limit": { "context": 200000, "output": 32000 },
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] }
+        },
+        "coder": {
+          "name": "Router Coder (<=$2/1M)",
+          "limit": { "context": 131072, "output": 32768 },
+          "capabilities": { "tools": true, "input": ["text"], "output": ["text"] }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+# Secrets — never commit real keys
+.env
+!.env.example
+
+# Runtime state: cooldowns, usage, balances, decision log, cached titles
+state/
+state.json.broken-*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Tooling caches / virtualenvs
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
