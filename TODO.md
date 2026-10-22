@@ -49,3 +49,7 @@ balance and availability awareness, and automated ranks/costs from public data.
        via `opencode api get /api/session` (throttled 60s background task,
        cached in state/titles.json, ROUTER_TITLES_CMD override/disable),
        dashboard shows titles, 44 tests
+- [x] 21. Tokens-over-time diagram: per-minute input/output token buckets in
+       state, durable daily_history (90 days, backfilled from usage buckets),
+       /v1/spend exposes tokens_daily + token fields on the timeline, dashboard
+       shows a stacked per-minute token chart and a per-day token list, 46 tests

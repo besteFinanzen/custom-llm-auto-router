@@ -12,6 +12,7 @@ import tempfile
 import time
 
 USAGE_KEEP_DAYS = 3
+TOKEN_HISTORY_KEEP_DAYS = 90
 
 
 class State:
@@ -21,16 +22,36 @@ class State:
         self.file = self.path / "state.json"
         self.lock = asyncio.Lock()
         self.data = {"cooldowns": {}, "usage": {}, "balances": {},
-                     "totals": {}, "by_preset": {}, "by_model": {}, "daily": {}}
+                     "totals": {}, "by_preset": {}, "by_model": {}, "daily": {},
+                     "daily_history": {}}
         if self.file.exists():
             try:
                 loaded = json.loads(self.file.read_text())
                 self.data.update(loaded)
-                for key in ("totals", "by_preset", "by_model"):
-                    self.data.setdefault(key, {})
             except Exception:
                 backup = self.path / f"state.json.broken-{int(time.time())}"
                 self.file.replace(backup)
+        for key in ("totals", "by_preset", "by_model", "daily_history"):
+            self.data.setdefault(key, {})
+        self._backfill_history()
+
+    def _backfill_history(self) -> None:
+        """Seed the long-lived per-day token history from the pruned usage buckets.
+
+        `usage` only keeps a few days; `daily_history` is the durable series that
+        feeds the tokens-over-time diagram. Days already recorded are left alone.
+        """
+        usage = self.data.get("usage") or {}
+        for day, providers in usage.items():
+            if day in self.data["daily_history"]:
+                continue
+            agg = {"in": 0, "out": 0, "reqs": 0, "cost": 0.0}
+            for u in (providers or {}).values():
+                agg["in"] += u.get("in", 0)
+                agg["out"] += u.get("out", 0)
+                agg["reqs"] += u.get("reqs", 0)
+                agg["cost"] = round(agg["cost"] + u.get("cost", 0.0), 6)
+            self.data["daily_history"][day] = agg
 
     async def _save(self) -> None:
         async with self.lock:
@@ -117,12 +138,26 @@ class State:
             s["kinds"][kind] = s["kinds"].get(kind, 0) + 1
         # per-minute spend buckets — drives the live chart
         minute = datetime.datetime.now().strftime("%H:%M")
-        b = daily["buckets"].setdefault(minute, {"cost": 0.0, "reqs": 0})
+        b = daily["buckets"].setdefault(minute, {"cost": 0.0, "reqs": 0, "in": 0, "out": 0})
         b["cost"] = round(b["cost"] + cost_usd, 6)
         b["reqs"] += 1
+        b["in"] = b.get("in", 0) + tokens_in
+        b["out"] = b.get("out", 0) + tokens_out
+        b["tok"] = True
         if len(daily["buckets"]) > 720:  # cap at 12h of minutes
             for k in sorted(daily["buckets"])[: len(daily["buckets"]) - 720]:
                 daily["buckets"].pop(k, None)
+        # long-lived per-day token history — drives the tokens-over-time diagram
+        hist = self.data["daily_history"].setdefault(
+            self._today(), {"in": 0, "out": 0, "reqs": 0, "cost": 0.0})
+        hist["in"] += tokens_in
+        hist["out"] += tokens_out
+        hist["reqs"] += 1
+        hist["cost"] = round(hist.get("cost", 0.0) + cost_usd, 6)
+        cutoff = (datetime.date.today()
+                  - datetime.timedelta(days=TOKEN_HISTORY_KEEP_DAYS)).isoformat()
+        for d in [d for d in self.data["daily_history"] if d < cutoff]:
+            self.data["daily_history"].pop(d, None)
         await self._save()
 
     # ---- balance cache ----------------------------------------------------

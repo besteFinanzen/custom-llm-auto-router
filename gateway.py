@@ -352,8 +352,13 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
                    if rt.titles.lookup(s.get("session")) is None
                    and s.get("session") != "(unknown)"]
         rt.titles.ensure_refresh(unknown)
-        timeline = [{"t": k, "cost": v.get("cost", 0.0), "reqs": v.get("reqs", 0)}
+        timeline = [{"t": k, "cost": v.get("cost", 0.0), "reqs": v.get("reqs", 0),
+                     "in": v.get("in", 0), "out": v.get("out", 0),
+                     "tok": bool(v.get("tok")) or bool(v.get("in")) or bool(v.get("out"))}
                     for k, v in sorted((daily.get("buckets") or {}).items())]
+        tokens_daily = [{"date": k, "in": v.get("in", 0), "out": v.get("out", 0),
+                         "reqs": v.get("reqs", 0), "cost": v.get("cost", 0.0)}
+                        for k, v in sorted((rt.state.data.get("daily_history") or {}).items())]
         return {
             "now": time.time(),
             "uptime_s": round(time.time() - rt.started_at),
@@ -363,6 +368,7 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
             "models_today": daily.get("by_model", {}),
             "sessions": sessions,
             "timeline": timeline,
+            "tokens_daily": tokens_daily,
             "presets_total": rt.state.data.get("by_preset", {}),
             "models_total": rt.state.data.get("by_model", {}),
             "cooldowns": {mid: round(rt.state.cooldown_remaining(mid))

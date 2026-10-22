@@ -110,12 +110,14 @@ Shows, refreshing every 2 s (pause button available): today's spend / requests /
 tokens, per-provider cards with live balance chips (OpenRouter credits, DeepSeek
 balance, e-Infra budget, rate caps), spend by preset and top models for today,
 a **live per-minute spend chart** (bars = cost/minute, line = cumulative, last
-120 minutes with activity), a **sessions** table for today (requests, kind mix,
+120 minutes with activity), a **tokens processed over time** diagram (stacked bars
+= input/output tokens per minute, line = cumulative, plus a per-day token
+history for the last 14 days), a **sessions** table for today (requests, kind mix,
 last model, tokens, cost, last seen — click a row to filter the request feed),
 a rolling feed of the latest 40 routing decisions (kind, preset, chosen model,
 tokens, cost, latency, failovers), plus cooldown/rank-freshness alerts. Backed by
-`GET /v1/spend` (the same JSON if you want to script it; includes `sessions` and
-`timeline`).
+`GET /v1/spend` (the same JSON if you want to script it; includes `sessions`,
+`timeline` and `tokens_daily`).
 
 Session grouping comes from the `x-oc-session` header, set by the bundled
 OpenCode plugin (`integrations/opencode/plugins/router-tags`) from `event.sessionID`.
@@ -133,6 +135,10 @@ and the filter chip. A new session gets its title only after OpenCode's aux
 Note: the per-preset/per-model/session *today* buckets and minute buckets start
 accumulating when this feature is first deployed; lifetime `totals` are unaffected.
 Restart the gateway after upgrading so `/v1/spend` exposes the new fields.
+
+The per-day token history (`daily_history` in `state/state.json`) is durable —
+it is kept for 90 days and is seeded from the shorter-lived daily usage buckets
+on startup, so the day rows are populated right away and keep growing.
 
 ## Data refresh
 

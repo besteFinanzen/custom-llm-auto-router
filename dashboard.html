@@ -63,6 +63,17 @@
   .chart-panel h2{display:flex;justify-content:space-between;gap:12px}
   .chart-panel h2 .muted{text-transform:none;letter-spacing:0;font-weight:400}
   .chart-panel svg rect{transition:height .3s,y .3s}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:11.5px;color:var(--muted);margin:8px 0 2px}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .legend i{width:9px;height:9px;border-radius:2px;display:inline-block}
+  .sw-in{background:var(--blue)} .sw-out{background:var(--green)} .sw-cum{background:var(--cyan)}
+  .day-row{display:grid;grid-template-columns:96px 1fr 108px;align-items:center;gap:10px;margin:6px 0;font-size:12.5px}
+  .day-row .lbl{color:var(--muted)}
+  .day-row .val{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+  .day-row.today .lbl{color:var(--fg)}
+  .stack{display:flex;height:9px;border-radius:4px;overflow:hidden;background:var(--panel2)}
+  .stack i{display:block;height:100%}
+  .stack .in{background:var(--blue)} .stack .out{background:var(--green)}
   .srow{cursor:pointer}
   .srow:hover td{background:#161e2b}
   .srow.sel td{background:#1b2431}
@@ -92,6 +103,18 @@
   <section class="panel chart-panel">
     <h2><span>spend today · live per-minute</span><span class="muted" id="chart-meta"></span></h2>
     <div id="chart"></div>
+  </section>
+
+  <section class="panel chart-panel">
+    <h2><span>tokens processed · over time</span><span class="muted" id="tok-chart-meta"></span></h2>
+    <div id="token-chart"></div>
+    <div class="legend">
+      <span><i class="sw-in"></i>input tokens</span>
+      <span><i class="sw-out"></i>output tokens</span>
+      <span><i class="sw-cum"></i>cumulative</span>
+    </div>
+    <h2 style="margin-top:14px">tokens per day <span class="muted" id="tok-daily-meta" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="token-daily"></div>
   </section>
 
   <section class="grid">
@@ -193,21 +216,34 @@ function renderModels(d) {
   ).join('');
 }
 
-function renderChart(d) {
-  const tl = d.timeline || [];
-  const el = $('#chart');
-  if (!tl.length) { el.innerHTML = '<div class="muted">no requests yet today</div>'; $('#chart-meta').textContent = ''; return; }
+function minuteSlots(tl, span) {
   const toMin = s => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+  if (!tl || !tl.length) return [];
   const last = toMin(tl[tl.length - 1].t);
-  const start = Math.max(toMin(tl[0].t), last - 119);
+  const start = Math.max(toMin(tl[0].t), last - (span - 1));
   const byMin = new Map(tl.map(p => [toMin(p.t), p]));
   const slots = [];
   for (let m = start; m <= last; m++) {
     const key = String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
     const p = byMin.get(m);
-    slots.push({t: key, cost: p ? p.cost : 0, reqs: p ? p.reqs : 0});
+    slots.push({
+      t: key,
+      cost: p ? (p.cost || 0) : 0,
+      reqs: p ? (p.reqs || 0) : 0,
+      in: p ? (p.in || 0) : 0,
+      out: p ? (p.out || 0) : 0,
+      tok: p ? !!p.tok : false
+    });
   }
+  return slots;
+}
+
+function renderChart(d) {
+  const slots = minuteSlots(d.timeline || [], 120);
+  const el = $('#chart');
+  if (!slots.length) { el.innerHTML = '<div class="muted">no requests yet today</div>'; $('#chart-meta').textContent = ''; return; }
   const maxC = Math.max(...slots.map(s => s.cost), 1e-6);
+  const grand = slots.reduce((a, s) => a + s.cost, 0);
   const W = 1000, H = 150, bw = W / slots.length;
   let bars = '', cum = 0;
   const pts = [];
@@ -217,14 +253,86 @@ function renderChart(d) {
     bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${h}"
       fill="${s.cost > 0 ? '#d29922' : '#1b2431'}"><title>${s.t} · ${money(s.cost)} · ${s.reqs} reqs</title></rect>`;
     cum += s.cost;
-    pts.push(`${(x + bw / 2).toFixed(1)},${(H - 16 - (cum / Math.max(cum, 1e-9)) * (H - 24)).toFixed(1)}`);
+    if (grand > 0) {
+      pts.push(`${(x + bw / 2).toFixed(1)},${(H - 16 - (cum / grand) * (H - 24)).toFixed(1)}`);
+    }
   });
-  const line = `<polyline fill="none" stroke="#39d2c0" stroke-width="1.6" points="${pts.join(' ')}"/>`;
+  const line = grand > 0
+    ? `<polyline fill="none" stroke="#39d2c0" stroke-width="1.6" points="${pts.join(' ')}"/>`
+    : '';
   const axis = `<text x="2" y="${H - 3}" fill="#8b949e" font-size="10">${slots[0].t}</text>
     <text x="${W - 2}" y="${H - 3}" text-anchor="end" fill="#8b949e" font-size="10">${slots[slots.length - 1].t}</text>`;
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:150px;display:block">${bars}${line}${axis}</svg>`;
   const total = slots.reduce((a, s) => a + s.reqs, 0);
   $('#chart-meta').textContent = `peak ${money(maxC)}/min · ${total} reqs in window · bars = per minute, line = cumulative`;
+}
+
+function renderTokenChart(d) {
+  const el = $('#token-chart');
+  const meta = $('#tok-chart-meta');
+  const slots = minuteSlots(d.timeline || [], 120).filter(s => s.tok);
+  if (!slots.length) {
+    el.innerHTML = '<div class="muted">no token data in the last 2 hours yet</div>';
+    meta.textContent = '';
+    return;
+  }
+  const totalOf = s => s.in + s.out;
+  const maxT = Math.max(...slots.map(totalOf), 1);
+  const grand = slots.reduce((a, s) => a + totalOf(s), 0);
+  const W = 1000, H = 150, bw = W / slots.length;
+  let bars = '', cum = 0;
+  const pts = [];
+  slots.forEach((s, i) => {
+    const total = totalOf(s);
+    const x = i * bw;
+    const hIn = Math.round((s.in / maxT) * (H - 24));
+    const hOut = Math.round((s.out / maxT) * (H - 24));
+    const yOut = H - 16 - hOut;
+    const yIn = yOut + hOut;
+    const w = Math.max(1, bw - 1).toFixed(1);
+    bars += `<rect x="${x.toFixed(1)}" y="${yIn}" width="${w}" height="${hIn}" fill="#58a6ff"><title>${s.t} · in ${s.in} tok</title></rect>`;
+    bars += `<rect x="${x.toFixed(1)}" y="${yOut}" width="${w}" height="${hOut}" fill="#3fb950"><title>${s.t} · out ${s.out} tok</title></rect>`;
+    cum += total;
+    if (grand > 0) {
+      pts.push(`${(x + bw / 2).toFixed(1)},${(H - 16 - (cum / grand) * (H - 24)).toFixed(1)}`);
+    }
+  });
+  const line = grand > 0
+    ? `<polyline fill="none" stroke="#39d2c0" stroke-width="1.6" points="${pts.join(' ')}"/>`
+    : '';
+  const axis = `<text x="2" y="${H - 3}" fill="#8b949e" font-size="10">${slots[0].t}</text>
+    <text x="${W - 2}" y="${H - 3}" text-anchor="end" fill="#8b949e" font-size="10">${slots[slots.length - 1].t}</text>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:150px;display:block">${bars}${line}${axis}</svg>`;
+  const inTok = slots.reduce((a, s) => a + s.in, 0);
+  const outTok = slots.reduce((a, s) => a + s.out, 0);
+  meta.textContent = `peak ${tok(maxT)} tok/min · ${tok(grand)} tok in window (${tok(inTok)} in · ${tok(outTok)} out) · bars = per minute, line = cumulative`;
+}
+
+function renderTokenDaily(d) {
+  const el = $('#token-daily');
+  const meta = $('#tok-daily-meta');
+  const days = (d.tokens_daily || []).slice(-14);
+  if (!days.length) {
+    el.innerHTML = '<div class="muted">no token history yet</div>';
+    meta.textContent = '';
+    return;
+  }
+  const maxT = Math.max(...days.map(x => (x.in || 0) + (x.out || 0)), 1);
+  const today = new Date().toISOString().slice(0, 10);
+  el.innerHTML = days.map(day => {
+    const t = (day.in || 0) + (day.out || 0);
+    const wIn = (day.in || 0) / maxT * 100;
+    const wOut = (day.out || 0) / maxT * 100;
+    const label = day.date.slice(5);
+    const cls = day.date === today ? 'day-row today' : 'day-row';
+    return `<div class="${cls}" title="${esc(day.date)} · ${day.reqs || 0} reqs · ${money(day.cost || 0)}">
+      <span class="lbl">${esc(label)}</span>
+      <span class="stack"><i class="in" style="width:${wIn.toFixed(2)}%"></i><i class="out" style="width:${wOut.toFixed(2)}%"></i></span>
+      <span class="val">${tok(t)} tok</span>
+    </div>`;
+  }).join('');
+  const total = days.reduce((a, x) => a + (x.in || 0) + (x.out || 0), 0);
+  meta.textContent = `last ${days.length} days · ${tok(total)} tok total`;
 }
 
 function sessionTitle(d, id) {
@@ -310,6 +418,8 @@ function render(d) {
   $('#models-meta').textContent = disc.fetched_at ? 'discovery ' + String(disc.fetched_at).slice(0, 16).replace('T', ' ') : 'no discovery yet';
   renderProviders(d);
   renderChart(d);
+  renderTokenChart(d);
+  renderTokenDaily(d);
   renderPresets(d);
   renderModels(d);
   renderSessions(d);
