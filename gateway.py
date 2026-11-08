@@ -31,7 +31,7 @@ from state import State
 from titles import TitleCache
 from discovery import load_discovered
 
-FAILOVER_STATUSES = {408, 409, 429, 500, 502, 503, 504}
+FAILOVER_STATUSES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 EST_CHARS_PER_TOKEN = 4
 HOST = "127.0.0.1"
 PORT = 4141
@@ -113,6 +113,15 @@ class DirectModel(Model):
 async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: dict) -> Response:
     prov = rt.catalog.providers[model.provider]
     t0 = time.time()
+
+    # ---- pre-flight: skip models/providers already excluded by failure thresholds ----
+    failure_policy = rt.policy.get("failures") or {}
+    if failure_policy.get("enabled", True):
+        if rt.state.is_model_failed(model.id, failure_policy):
+            raise UpstreamFail(503, f"model {model.id} excluded after consecutive failures")
+        if rt.state.is_provider_failed(prov.id, failure_policy):
+            raise UpstreamFail(503, f"provider {prov.id} excluded after consecutive failures")
+
     try:
         req = rt.client.build_request("POST", f"{prov.base_url}/chat/completions",
                                       json=body, headers=prov.auth_headers())
@@ -127,12 +136,36 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                         else float(rt.policy.get("cooldown_seconds", 60))
                 except ValueError:
                     cd = float(rt.policy.get("cooldown_seconds", 60))
-                await rt.state.set_cooldown(model.id, cd)
+
+                # ---- record consecutive failures for model + provider ----
+                err_text = raw.decode("utf-8", "replace")
+                await rt.state.record_model_failure(model.id, prov.id, err_text, resp.status_code)
+                await rt.state.record_provider_failure(prov.id, err_text, resp.status_code)
+
+                # ---- apply exponential backoff (multiplier^n) ----
+                mult = float(failure_policy.get("backoff_multiplier", 2.0))
+                base = float(failure_policy.get("backoff_base_seconds", 60))
+                cap = float(failure_policy.get("backoff_max_seconds", 900))
+                n = rt.state.get_model_failures(model.id).get("count", 1)
+                backoff_cd = min(base * (mult ** max(n - 1, 0)), cap)
+                if retry_after:
+                    backoff_cd = min(float(retry_after), cap)
+                rt.state.set_backoff(model.id, backoff_cd, mult, prov.id)
+                await rt.state.set_cooldown(model.id, backoff_cd)
             raise UpstreamFail(resp.status_code, raw.decode("utf-8", "replace"))
     except UpstreamFail:
         raise
     except (httpx.TimeoutException, httpx.TransportError) as exc:
-        await rt.state.set_cooldown(model.id, float(rt.policy.get("cooldown_seconds", 60)))
+        err_text = f"transport error: {exc}"
+        await rt.state.record_model_failure(model.id, prov.id, err_text, 0)
+        await rt.state.record_provider_failure(prov.id, err_text, 0)
+        base = float(failure_policy.get("backoff_base_seconds", 60))
+        mult = float(failure_policy.get("backoff_multiplier", 2.0))
+        cap = float(failure_policy.get("backoff_max_seconds", 900))
+        n = rt.state.get_model_failures(model.id).get("count", 1)
+        backoff_cd = min(base * (mult ** max(n - 1, 0)), cap)
+        rt.state.set_backoff(model.id, backoff_cd, mult, prov.id)
+        await rt.state.set_cooldown(model.id, backoff_cd)
         raise UpstreamFail(0, f"transport error: {exc}")
 
     cost_in, cost_out, _, _ = effective(model, rt.ranks)
@@ -159,6 +192,7 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                            usage={"in": est_in, "out": tout, "estimated": True},
                            cost_usd=cost, price={"in": cost_in, "out": cost_out})
                 rt.log_decision(rec)
+                await rt.state.record_success(model.id, model.provider)
         return StreamingResponse(gen(), media_type=resp.headers.get("content-type", "text/event-stream"),
                                  headers={"x-router-model": model.id})
 
@@ -181,6 +215,7 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                usage={"in": usage.get("prompt_tokens"), "out": usage.get("completion_tokens")},
                cost_usd=cost, price={"in": cost_in, "out": cost_out})
     rt.log_decision(rec)
+    await rt.state.record_success(model.id, model.provider)
     return Response(content=data, status_code=200,
                     media_type=resp.headers.get("content-type", "application/json"),
                     headers={"x-router-model": model.id,

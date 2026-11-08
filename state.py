@@ -23,7 +23,10 @@ class State:
         self.lock = asyncio.Lock()
         self.data = {"cooldowns": {}, "usage": {}, "balances": {},
                      "totals": {}, "by_preset": {}, "by_model": {}, "daily": {},
-                     "daily_history": {}}
+                     "daily_history": {},
+                     # consecutive failure tracking + exponential backoff (v2 schema)
+                     "failures": {"models": {}, "providers": {}},
+                     "backoff": {}}
         if self.file.exists():
             try:
                 loaded = json.loads(self.file.read_text())
@@ -33,6 +36,11 @@ class State:
                 self.file.replace(backup)
         for key in ("totals", "by_preset", "by_model", "daily_history"):
             self.data.setdefault(key, {})
+        # Ensure failure-tracking schema defaults exist
+        failures = self.data.setdefault("failures", {"models": {}, "providers": {}})
+        failures.setdefault("models", {})
+        failures.setdefault("providers", {})
+        self.data.setdefault("backoff", {})
         self._backfill_history()
 
     def _backfill_history(self) -> None:
@@ -74,7 +82,161 @@ class State:
             self.data["cooldowns"].pop(model_id, None)
             await self._save()
 
-    # ---- usage accounting ------------------------------------------------
+    # ---- failure tracking (consecutive failures + exponential backoff) ----
+    def _failures(self) -> dict:
+        """Normalized failures store with guaranteed models/providers dicts."""
+        failures = self.data.setdefault("failures", {"models": {}, "providers": {}})
+        failures.setdefault("models", {})
+        failures.setdefault("providers", {})
+        return failures
+
+    def get_model_failures(self, model_id: str) -> dict:
+        """Get consecutive failure info for a model.
+
+        Returns {
+            "count": int,
+            "first_failure": float,   # epoch seconds
+            "last_error": str,
+            "status": int,
+            "provider": str,
+        }
+        """
+        failures = self._failures()
+        entry = failures.get("models", {}).get(model_id) or {}
+        return {
+            "count": int(entry.get("count") or 0),
+            "first_failure": float(entry.get("first_failure") or 0.0),
+            "last_error": str(entry.get("last_error") or ""),
+            "status": int(entry.get("status") or 0),
+            "provider": str(entry.get("provider") or ""),
+        }
+
+    def get_provider_failures(self, provider_id: str) -> dict:
+        """Get consecutive failure info for a provider."""
+        failures = self._failures()
+        entry = failures.get("providers", {}).get(provider_id) or {}
+        return {
+            "count": int(entry.get("count") or 0),
+            "first_failure": float(entry.get("first_failure") or 0.0),
+            "last_error": str(entry.get("last_error") or ""),
+            "status": int(entry.get("status") or 0),
+        }
+
+    def _bump(self, scope: str, key: str, error: str, status: int, provider: str = "") -> dict:
+        """Increment failure count for (scope,key); returns the updated entry."""
+        failures = self._failures()
+        scope_map = failures.get("models" if scope == "models" else "providers")
+        scope_map.setdefault(key, {})
+        now = time.time()
+        entry = scope_map[key]
+        entry["count"] = int(entry.get("count") or 0) + 1
+        entry.setdefault("first_failure", now)
+        entry["last_error"] = str(error)[:300]
+        entry["status"] = status or 0
+        if provider:
+            entry["provider"] = provider
+        return {
+            "count": entry["count"],
+            "first_failure": entry["first_failure"],
+            "last_error": entry["last_error"],
+            "status": entry["status"],
+            "provider": entry.get("provider"),
+        }
+
+    async def record_model_failure(self, model_id: str, provider: str, error: str, status: int = 0) -> dict:
+        """Record consecutive failure for a model; also bump the provider-level counter."""
+        mf = self._bump("models", model_id, error, status, provider)
+        self._bump("providers", provider, error, status)
+        await self._save()
+        return mf
+
+    async def record_provider_failure(self, provider_id: str, error: str, status: int = 0) -> dict:
+        """Record consecutive failure for a provider (any model attempt)."""
+        pf = self._bump("providers", provider_id, error, status)
+        await self._save()
+        return pf
+
+    async def record_success(self, model_id: str, provider: str) -> None:
+        """Reset consecutive failure counters for a model (and its provider) after a success."""
+        failures = self._failures()
+        changed = False
+        models_map = failures.get("models", {})
+        if model_id in models_map:
+            models_map.pop(model_id, None)
+            changed = True
+        providers_map = failures.get("providers", {})
+        if provider in providers_map:
+            providers_map.pop(provider, None)
+            changed = True
+        # Also clear backoff for this model
+        backoff = self.data.get("backoff")
+        if backoff is not None and model_id in backoff:
+            backoff.pop(model_id, None)
+            changed = True
+        if changed:
+            await self._save()
+
+    def is_model_failed(self, model_id: str, thresholds: dict) -> bool:
+        """Check if a model has exceeded its consecutive failure threshold.
+
+        `thresholds` is the failures policy dict (from catalog.yaml).
+        """
+        policy = thresholds or {}
+        if not policy.get("enabled", True):
+            return False
+        model_threshold = int(policy.get("model_threshold", 3))
+        window = float(policy.get("model_window_seconds") or 0)
+        entry = self.get_model_failures(model_id)
+        if entry["count"] < model_threshold:
+            return False
+        if window > 0 and (time.time() - entry["first_failure"]) > window:
+            # Stale failures (window elapsed) -> treat as healthy
+            return False
+        return True
+
+    def is_provider_failed(self, provider_id: str, thresholds: dict) -> bool:
+        """Check if a provider has exceeded its consecutive failure threshold.
+
+        `thresholds` is the failures policy dict (from catalog.yaml).
+        """
+        policy = thresholds or {}
+        if not policy.get("enabled", True):
+            return False
+        provider_threshold = int(policy.get("provider_threshold", 5))
+        window = float(policy.get("provider_window_seconds") or 0)
+        entry = self.get_provider_failures(provider_id)
+        if entry["count"] < provider_threshold:
+            return False
+        if window > 0 and (time.time() - entry["first_failure"]) > window:
+            # Stale failures (window elapsed) -> treat as healthy
+            return False
+        return True
+
+    # ---- exponential backoff ------------------------------------------------
+    def set_backoff(self, model_id: str, seconds: float, multiplier: float = 2.0, provider: str = "") -> None:
+        """Schedule exponential backoff: cooldown = min(seconds * multiplier^n, cap)."""
+        backoff = self.data.setdefault("backoff", {})
+        backoff[model_id] = {
+            "until": time.time() + seconds,
+            "base": seconds,
+            "mult": multiplier,
+            "ts": time.time(),
+        }
+
+    def backoff_until(self, model_id: str) -> float:
+        """Get the absolute timestamp when backoff/cooldown for this model should end."""
+        backoff = self.data.get("backoff", {})
+        if model_id in backoff:
+            return float(backoff[model_id].get("until") or 0.0)
+        return float(self.cooldown_remaining(model_id))
+
+    def clear_backoff(self, model_id: str) -> None:
+        """Clear backoff state for a model (e.g., after success)."""
+        backoff = self.data.get("backoff")
+        if backoff is not None and model_id in backoff:
+            backoff.pop(model_id, None)
+
+    # ---- usage accounting -------------------------------------------------
     def _today(self) -> str:
         return datetime.date.today().isoformat()
 

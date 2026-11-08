@@ -5,6 +5,7 @@ import datetime
 import json
 
 from tests.conftest import build_client, run, write_catalog
+from state import State
 
 BODY = {"model": "high", "messages": [{"role": "user", "content": "hi"}]}
 
@@ -87,6 +88,63 @@ def test_budget_exhausted_no_candidates(tmp_path, stub, monkeypatch):
         run(c.aclose())
     assert r.status_code == 503
     assert r.json()["error"]["type"] == "no_candidates"
+
+
+def test_403_fails_over_and_cools_down(client, stub, tmp_path):
+    stub.httpd.state["behavior"]["strong"] = "403"
+    r = run(client.post("/v1/chat/completions", json=BODY))
+    assert r.status_code == 200
+    assert r.json()["choices"][0]["message"]["content"] == "hello from mid"
+    log = (tmp_path / "state" / "decisions.jsonl").read_text().strip().splitlines()
+    rec = json.loads(log[-1])
+    assert rec["chosen"] == "fake/mid"
+    assert rec["tried"] and rec["tried"][0]["status"] == 403
+
+    # strong is cooling down: next request goes straight to mid
+    r2 = run(client.post("/v1/chat/completions", json=BODY))
+    assert r2.json()["choices"][0]["message"]["content"] == "hello from mid"
+    assert [b["model"] for b in stub.httpd.state["received"]] == ["strong", "mid", "mid"]
+
+
+def test_consecutive_failures_exclude_model(tmp_path):
+    """After model_threshold consecutive failures the model is excluded."""
+    from state import State
+
+    st = State(tmp_path / "state2")
+    thresholds = {"enabled": True, "model_threshold": 2, "provider_threshold": 99,
+                  "model_window_seconds": 0, "provider_window_seconds": 0,
+                  "backoff_base_seconds": 60, "backoff_multiplier": 2.0,
+                  "backoff_max_seconds": 900}
+    assert not st.is_model_failed("fake/strong", thresholds)
+    assert not st.is_provider_failed("fake", thresholds)
+
+    run(st.record_model_failure("fake/strong", "fake", "forbidden", 403))
+    run(st.record_model_failure("fake/strong", "fake", "forbidden", 403))
+    assert st.is_model_failed("fake/strong", thresholds)
+
+    # success resets the counters -> not failed anymore
+    run(st.record_success("fake/strong", "fake"))
+    assert not st.is_model_failed("fake/strong", thresholds)
+
+
+def test_success_resets_failure_counter(tmp_path):
+    """A successful response resets the consecutive-failure counter (used by the gateway)."""
+    from state import State
+
+    st = State(tmp_path / "state2")
+    thresholds = {"enabled": True, "model_threshold": 1, "provider_threshold": 1,
+                  "model_window_seconds": 0, "provider_window_seconds": 0,
+                  "backoff_base_seconds": 60, "backoff_multiplier": 2.0,
+                  "backoff_max_seconds": 900}
+
+    run(st.record_model_failure("fake/strong", "fake", "forbidden", 403))
+    run(st.record_provider_failure("fake", "forbidden", 403))
+    assert st.is_model_failed("fake/strong", thresholds)
+    assert st.is_provider_failed("fake", thresholds)
+
+    run(st.record_success("fake/strong", "fake"))
+    assert not st.is_model_failed("fake/strong", thresholds)
+    assert not st.is_provider_failed("fake", thresholds)
 
 
 def test_all_upstreams_fail(client, stub):

@@ -40,6 +40,8 @@ class StubHandler(BaseHTTPRequestHandler):
         action = self.server.state["behavior"].get(model, "ok")
         if action == "429":
             return self._send(429, {"error": {"message": "rate limited", "type": "rate_limit_error"}})
+        if action == "403":
+            return self._send(403, {"error": {"message": "forbidden", "type": "auth_error"}})
         if action == "err":
             return self._send(500, {"error": {"message": "boom"}})
         if action == "sse":

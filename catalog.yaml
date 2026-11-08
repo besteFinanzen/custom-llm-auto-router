@@ -16,6 +16,16 @@ policy:
   balance_cache_seconds: 3600
   request_timeout_seconds: 300
   max_failovers: 3              # upstreams tried per request
+
+  failures:
+    enabled: true               # enable consecutive-failure tracking
+    model_threshold: 3           # consecutive failures to exclude model
+    provider_threshold: 5        # consecutive failures to exclude provider
+    model_window_seconds: 0      # 0 = no window, count all failures
+    provider_window_seconds: 0
+    backoff_base_seconds: 60     # base cooldown for backoff
+    backoff_multiplier: 2.0      # exponential multiplier
+    backoff_max_seconds: 900     # cap for backoff cooldown
   discovery:                    # provider model discovery (GET {base}/models)
     enabled: true
     seed_rank: 30               # prior for discovered models until ranks match
