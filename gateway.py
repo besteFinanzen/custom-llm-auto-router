@@ -9,6 +9,7 @@ GET  /v1/status            selector view: providers, balances, cooldowns, usage,
 GET  /v1/spend             live spending snapshot (today, by provider/preset/model, recent)
 GET  /dashboard            live spending dashboard (HTML)
 POST /v1/reload            re-read catalog.yaml + state/ranks.json
+POST /v1/reset-failures    clear failure counters, backoff and cooldowns
 """
 from __future__ import annotations
 
@@ -27,12 +28,15 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 import balance as balance_mod
 from catalog import ROOT, Catalog, Model, load_dotenv
 from selector import Ranks, effective, preset_estimate, rank_candidates
+from sse import normalize_sse_stream
 from state import State
 from titles import TitleCache
 from discovery import load_discovered
 
 FAILOVER_STATUSES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 EST_CHARS_PER_TOKEN = 4
+DECISIONS_MAX_BYTES = 64 * 1024 * 1024
+MAX_REJECTED_LOGGED = 40
 HOST = "127.0.0.1"
 PORT = 4141
 DASHBOARD_URL = f"http://{HOST}:{PORT}/dashboard"
@@ -63,7 +67,7 @@ class Runtime:
 
     def _refresh_models(self) -> None:
         if (self.catalog.policy.get("discovery") or {}).get("enabled", True):
-            self.discovered = load_discovered(self.state.path)
+            self.discovered = load_discovered(self.state.path, self.catalog)
         else:
             self.discovered = {}
         self.models = {**self.discovered, **self.catalog.models}  # curated wins
@@ -83,6 +87,16 @@ class Runtime:
         self._refresh_models()
 
     def log_decision(self, rec: dict) -> None:
+        # 500 candidates x every failed request is what turned this log into
+        # hundreds of MB; keep a useful head and record the total instead.
+        if len(rec.get("rejected") or []) > MAX_REJECTED_LOGGED:
+            rec = {**rec, "rejected_total": len(rec["rejected"]),
+                   "rejected": rec["rejected"][:MAX_REJECTED_LOGGED]}
+        try:
+            if self.decisions_file.exists() and self.decisions_file.stat().st_size > DECISIONS_MAX_BYTES:
+                self.decisions_file.replace(self.decisions_file.with_suffix(".jsonl.1"))
+        except OSError:
+            pass
         with self.decisions_file.open("a") as f:
             f.write(json.dumps(rec, default=str) + "\n")
 
@@ -137,10 +151,9 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                 except ValueError:
                     cd = float(rt.policy.get("cooldown_seconds", 60))
 
-                # ---- record consecutive failures for model + provider ----
+                # ---- record consecutive failure (model counter + provider counter) ----
                 err_text = raw.decode("utf-8", "replace")
                 await rt.state.record_model_failure(model.id, prov.id, err_text, resp.status_code)
-                await rt.state.record_provider_failure(prov.id, err_text, resp.status_code)
 
                 # ---- apply exponential backoff (multiplier^n) ----
                 mult = float(failure_policy.get("backoff_multiplier", 2.0))
@@ -158,7 +171,6 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
     except (httpx.TimeoutException, httpx.TransportError) as exc:
         err_text = f"transport error: {exc}"
         await rt.state.record_model_failure(model.id, prov.id, err_text, 0)
-        await rt.state.record_provider_failure(prov.id, err_text, 0)
         base = float(failure_policy.get("backoff_base_seconds", 60))
         mult = float(failure_policy.get("backoff_multiplier", 2.0))
         cap = float(failure_policy.get("backoff_max_seconds", 900))
@@ -178,8 +190,21 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
         async def gen():
             n = 0
             try:
-                async for chunk in resp.aiter_raw():
-                    n += len(chunk)
+                # Decode upstream content-encoding (gzip/deflate/br) so the
+                # downstream sees plain SSE. Some upstreams (DeepSeek) gzip
+                # event streams; forwarding raw bytes without the encoding
+                # header makes clients fail with "stream ended without
+                # finish_reason".
+                async def upstream_bytes():
+                    nonlocal n
+                    async for chunk in resp.aiter_bytes():
+                        n += len(chunk)
+                        yield chunk
+
+                # Hold finish_reason back until the stream ends so providers
+                # that keep sending deltas after it do not crash strict
+                # OpenAI-compatible clients.
+                async for chunk in normalize_sse_stream(upstream_bytes()):
                     yield chunk
             finally:
                 await resp.aclose()
@@ -298,12 +323,22 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
             return err(503, "no eligible model (all disabled/cooling/over-budget); see "
                             "/v1/status and state/decisions.jsonl", "no_candidates")
 
+        failure_policy = rt.policy.get("failures") or {}
         tried = 0
         limit = 1 + int(rt.policy.get("max_failovers", 3))
         for m in candidates:
             if tried >= limit:
                 break
             prov = rt.catalog.providers[m.provider]
+            # Already-excluded models are skipped without consuming a failover
+            # attempt: otherwise a handful of permanently dead models can hide
+            # every healthy candidate behind the max_failovers limit.
+            if failure_policy.get("enabled", True) and (
+                    rt.state.is_model_failed(m.id, failure_policy)
+                    or rt.state.is_provider_failed(m.provider, failure_policy)):
+                rec["rejected"].append({"id": m.id,
+                                        "reason": "excluded after consecutive failures"})
+                continue
             ok, detail = await balance_mod.balance_ok(prov, rt.state, rt.client, max_age)
             if not ok:
                 rec["rejected"].append({"id": m.id, "reason": f"balance: {detail}"})
@@ -356,6 +391,7 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
             },
             "cooldowns": {mid: round(rt.state.cooldown_remaining(mid))
                           for mid in rt.state.data["cooldowns"] if rt.state.cooldown_remaining(mid) > 0},
+            "failures": rt.state.data.get("failures", {}),
             "ranks": {"fetched_at": rt.ranks.data.get("fetched_at"),
                       "unmatched": rt.ranks.data.get("unmatched", []),
                       "review": rt.ranks.data.get("review", [])},
@@ -427,6 +463,12 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
     async def reload():
         rt.reload()
         return {"ok": True}
+
+    @app.post("/v1/reset-failures")
+    async def reset_failures():
+        """Operator escape hatch: re-enable models/providers after a fixed key
+        or a transient outage (usage/balance accounting is preserved)."""
+        return {"ok": True, "cleared": await rt.state.reset_failures()}
 
     @app.get("/healthz")
     async def healthz():

@@ -52,6 +52,19 @@ def test_sync_discovered_filters_and_defaults(tmp_path, stub):
     assert load_discovered(tmp_path / "state")["fake/fresh"].provider == "fake"
 
 
+def test_load_discovered_skips_curated_duplicates(tmp_path):
+    catalog = Catalog.load(_write(tmp_path, DISCOVERY_YAML.format(
+        url="http://127.0.0.1:9/v1")))
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "discovered.json").write_text(json.dumps({"models": {
+        "fake/curated-dup": {"id": "fake/curated-dup", "provider": "fake",
+                             "upstream": "curated"},
+        "fake/new": {"id": "fake/new", "provider": "fake", "upstream": "new"},
+    }}))
+    assert set(load_discovered(state, catalog)) == {"fake/new"}
+
+
 def _preload_discovered(tmp_path):
     state = tmp_path / "state"
     state.mkdir(exist_ok=True)

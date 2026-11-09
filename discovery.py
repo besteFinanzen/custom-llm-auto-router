@@ -100,7 +100,15 @@ def sync_discovered(catalog: Catalog, state_dir: pathlib.Path,
     return out
 
 
-def load_discovered(state_dir: pathlib.Path) -> dict[str, Model]:
+def load_discovered(state_dir: pathlib.Path,
+                    catalog: Catalog | None = None) -> dict[str, Model]:
+    """Load discovered models.
+
+    When `catalog` is provided, drop entries that cannot be routed anyway:
+    disabled providers, and duplicates of a curated model (same provider +
+    upstream, e.g. curated `e-infra/kimi` vs discovered `e_infra/kimi`). Without
+    this, duplicate entries can burn every failover attempt on one provider.
+    """
     path = state_dir / "discovered.json"
     if not path.exists():
         return {}
@@ -108,4 +116,16 @@ def load_discovered(state_dir: pathlib.Path) -> dict[str, Model]:
         data = json.loads(path.read_text())
     except Exception:
         return {}
-    return {mid: Model(cfg) for mid, cfg in (data.get("models") or {}).items()}
+    models = {mid: Model(cfg) for mid, cfg in (data.get("models") or {}).items()}
+    if catalog is None:
+        return models
+    curated = {(m.provider, m.upstream) for m in catalog.models.values()}
+    out: dict[str, Model] = {}
+    for mid, m in models.items():
+        prov = catalog.providers.get(m.provider)
+        if prov is None or not prov.enabled:
+            continue
+        if (m.provider, m.upstream) in curated:
+            continue
+        out[mid] = m
+    return out

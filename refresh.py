@@ -108,9 +108,11 @@ def mdev_record(mdev, provider: str, model) -> dict | None:
         return None
     prov_models = ((mdev.get(prov_key) or {}).get("models")) or {}
     mid = getattr(model, "mdev_id", None) or model.upstream
-    return (prov_models.get(mid)
-            or prov_models.get(mid.removesuffix(":free"))
-            or prov_models.get(mid + ":free"))
+    if mid.endswith(":free"):
+        # Never fall back to the paid base model for a ':free' variant: that is
+        # how a free model ends up with a non-zero price and fails a $0 preset.
+        return prov_models.get(mid)
+    return prov_models.get(mid) or prov_models.get(mid + ":free")
 
 
 def match_model(model, aa_recs, aa_i, aa_q, oc_i, oc_r) -> tuple[dict, dict[str, dict]]:
@@ -200,6 +202,12 @@ def compose(catalog: Catalog, models: dict, aa, oc, mdev, old_models: dict) -> d
             if rec.get("tool_call") is not None:
                 data["tools"] = bool(rec["tool_call"])
 
+        # A ':free' variant is free by definition. Guard against stale/paid
+        # models.dev data (or an old snapshot) re-introducing a price.
+        if str(getattr(m, "upstream", "")).endswith(":free"):
+            data["cost_in"] = 0.0
+            data["cost_out"] = 0.0
+
         entry = dict(comps)
         if data:
             entry["data"] = data
@@ -260,7 +268,7 @@ def main() -> int:
         else:
             print("  - discovery skipped")
 
-    discovered = load_discovered(sdir)
+    discovered = load_discovered(sdir, catalog)
     models_all: dict = {**discovered, **catalog.models}  # curated wins
     print(f"  · candidate models: {len(models_all)} "
           f"({len(catalog.models)} curated + {len(models_all) - len(catalog.models)} discovered)")

@@ -21,8 +21,8 @@ policy:
     enabled: true               # enable consecutive-failure tracking
     model_threshold: 3           # consecutive failures to exclude model
     provider_threshold: 5        # consecutive failures to exclude provider
-    model_window_seconds: 0      # 0 = no window, count all failures
-    provider_window_seconds: 0
+    model_window_seconds: 1800   # forgive failures after 30 min without a new one
+    provider_window_seconds: 1800  # 0 = never forgive (permanent exclusion)
     backoff_base_seconds: 60     # base cooldown for backoff
     backoff_multiplier: 2.0      # exponential multiplier
     backoff_max_seconds: 900     # cap for backoff cooldown
@@ -40,9 +40,10 @@ providers:
     discovery: {default_cost_in: 0, default_cost_out: 0, default_context: 131072}
     balance:
       type: budget               # no known balance API -> budget accounting
-      daily_tokens: 2000000      # seed cap (input+output), tune to your quota
+      daily_tokens: 50000000     # seed cap (input+output), tune to your quota
 
   opencode:
+    enabled: false                  # 403 "can't call models" outside the OpenCode client; remove to retry
     base_url: https://opencode.ai/inference/openai/v1
     models_url: https://opencode.ai/inference/v1/models   # list endpoint differs from chat base
     api_key_env: OPENCODE_API_KEY   # required even for free models (else 403)
@@ -104,7 +105,7 @@ models:
   - {id: e-infra/coder,            provider: e_infra, upstream: coder,            cost_in: 0, cost_out: 0, seed_rank: 46, context: 262144,  output: 49152, tools: true, image: true,  aa_slug: null, oc_id: null}
   - {id: e-infra/mini,             provider: e_infra, upstream: mini,             cost_in: 0, cost_out: 0, seed_rank: 25, context: 131072,  output: 32768, tools: true, image: false, aa_slug: openai/gpt-oss-120b, oc_id: null}
 
-  # ---- OpenCode free models (need OPENCODE_API_KEY even though cost 0) -------
+  # ---- OpenCode free models (provider disabled above until the key can call) -
   - {id: opencode/deepseek-v4.1-flash-free, provider: opencode, upstream: deepseek-v4.1-flash-free, cost_in: 0, cost_out: 0, seed_rank: 36, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4.1-flash}
   - {id: opencode/minimax-m3.1-flash-free,  provider: opencode, upstream: minimax-m3.1-flash-free,  cost_in: 0, cost_out: 0, seed_rank: 34, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: minimax-m3.1-flash}
   - {id: opencode/glm-5.3-flash-free,       provider: opencode, upstream: glm-5.3-flash-free,       cost_in: 0, cost_out: 0, seed_rank: 32, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: glm-5.3-flash}
@@ -113,8 +114,9 @@ models:
   - {id: opencode/big-pickle,               provider: opencode, upstream: big-pickle,               cost_in: 0, cost_out: 0, seed_rank: 22, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: null}
 
   # ---- OpenRouter (key covers free + paid; costs refreshed from models.dev) --
-  - {id: openrouter/minimax-m3.1-flash-free, provider: openrouter, upstream: minimax/minimax-m3.1-flash:free, cost_in: 0, cost_out: 0, seed_rank: 33, context: 1000000, output: 524288, tools: true, image: false, aa_slug: null, oc_id: minimax-m3.1-flash}
-  - {id: openrouter/free,        provider: openrouter, upstream: openrouter/free,              cost_in: 0, cost_out: 0, seed_rank: 20, context: 200000, output: 8000,   tools: true, image: false, aa_slug: null, oc_id: null}
+  # Retired :free variants are removed from the catalog (minimax-m3.1-flash's
+  # free launch ended 2026-10-22); discovered free models cover that ground.
+  - {id: openrouter/free,        provider: openrouter, upstream: openrouter/free,              cost_in: 0, cost_out: 0, seed_rank: 40, context: 200000, output: 8000,   tools: true, image: false, aa_slug: null, oc_id: null}
   - {id: openrouter/deepseek-v4.1-flash, provider: openrouter, upstream: deepseek/deepseek-v4.1-flash, cost_in: 0.049, cost_out: 0.375, seed_rank: 52, context: 1048576, output: 943718, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4.1-flash}
   - {id: openrouter/deepseek-v4-pro,     provider: openrouter, upstream: deepseek/deepseek-v4-pro,     cost_in: 0.95526, cost_out: 1.91052, seed_rank: 62, context: 1048576, output: 384000, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4-pro}
 

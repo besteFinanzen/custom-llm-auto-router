@@ -63,12 +63,17 @@ Tune everything in `catalog.yaml` (`presets.*.max_cost`, `weights`, `min_context
 1. `model` names the preset (effort parameter; `router/` prefix tolerated).
 2. `x-oc-kind` ∈ `{title, compaction, generate}` → forced to `policy.aux_preset` (`low`).
 3. Candidates = models with `enabled`, provider key present, blended cost ≤ ceiling,
-   context ≥ floor, tools if required, not cooling down, balance/capacity OK.
+   context ≥ floor, tools if required, not cooling down, balance/capacity OK,
+   and not excluded by consecutive-failure thresholds.
 4. Sort by score (weighted blend of AA intelligence/coding/agentic indices,
    opencode.ai retention + popularity share, or `seed_rank` prior) desc, cost asc.
 5. Try in order; on 429/5xx/timeout → cooldown (honors `Retry-After`) → next model.
+   Models/providers already excluded by failure tracking are skipped without
+   consuming a failover attempt.
 6. Every decision is appended to `state/decisions.jsonl`:
    `{ts, kind, requested, preset, rejected[], tried[], chosen, latency_ms, usage}`.
+   `rejected[]` is capped at 40 entries (`rejected_total` keeps the full count);
+   the log rotates to `decisions.jsonl.1` at 64 MB.
 
 Inspect live state: `curl -s localhost:4141/v1/status | python -m json.tool`.
 
@@ -160,6 +165,10 @@ unknown default to `999` so ceilings exclude them.
 | [opencode.ai/data](https://opencode.ai/data/index.json) | weekly retention + usage share | no key, no quota, daily updates; popularity intentionally low weight |
 | [models.dev](https://models.dev/api.json) | prices, context limits, tool support | no key; overrides catalog seeds where matched |
 
+`:free` variants are always priced at 0 and matched only against their exact
+models.dev id: they never inherit the paid base model's price, and stale paid
+data cannot push them over a `$0` preset ceiling.
+
 Unmatched models keep their `seed_rank` prior and are listed under `unmatched`
 in `state/ranks.json` and in `/v1/status`. Fix by adding `aa_slug` / `oc_id` /
 `mdev_id` to that model in `catalog.yaml`.
@@ -180,7 +189,7 @@ source.
 | Provider | Mechanism |
 |---|---|
 | e-Infra | no known API → local daily token budget (`budget.daily_tokens`) |
-| OpenCode free | local daily request cap (`rate_only.daily_requests`); key required even for free models |
+| OpenCode free | local daily request cap (`rate_only.daily_requests`); key required even for free models. Disabled by default: the key gets 403 outside the OpenCode client (`enabled: false` in `catalog.yaml`) |
 | OpenRouter | `GET /auth/key` credits check (+ price data from models.dev) |
 | DeepSeek | `GET /user/balance` real balance check (`min_balance`) |
 
@@ -188,19 +197,38 @@ API-based checks are cached (`policy.balance_cache_seconds`), fail open, and
 exhausted providers are excluded with an explicit reason in the decision log.
 Availability is enforced passively from real outcomes (429/5xx/timeout → cooldown).
 
+**Consecutive failures.** Every failed attempt increments the model counter and,
+once, the provider counter. After `failures.model_threshold` consecutive model
+failures (default 3) or `failures.provider_threshold` provider failures
+(default 5), the model/provider is excluded from routing. A success resets both
+counters. `failures.*_window_seconds` forgives stale failures (default 1800 s;
+`0` means permanent), so a provider can recover after a transient outage or a
+fixed key. To re-enable everything immediately without touching usage/balance
+accounting:
+
+```bash
+curl -s -X POST localhost:4141/v1/reset-failures
+```
+
 ## Endpoints
 
 | Route | Purpose |
 |---|---|
 | `POST /v1/chat/completions` | routing entrypoint (OpenAI-compatible, streaming supported) |
 | `GET /v1/models` | exposes the presets + approximate cost metadata |
-| `GET /v1/status` | providers, balances, usage, **costs**, preset estimates, cooldowns, rank freshness, **discovery** snapshot |
+| `GET /v1/status` | providers, balances, usage, **costs**, preset estimates, cooldowns, **failures**, rank freshness, **discovery** snapshot |
 | `GET /v1/spend` | live spending snapshot: today, by provider/preset/model, recent decisions, cooldowns |
 | `GET /dashboard` | live spending dashboard (HTML); `GET /` redirects here |
 | `POST /v1/reload` | reload `catalog.yaml` + `state/ranks.json` |
+| `POST /v1/reset-failures` | clear failure counters, backoff and cooldowns |
 | `GET /healthz` | liveness |
 
 Debug bypass: `"model": "direct/<provider>/<upstream>"`, e.g. `direct/e_infra/kimi`.
+
+Streaming streams are normalized: if an upstream keeps sending `delta` chunks
+after a `finish_reason`, the gateway withholds the finish reason and emits it in
+a final synthetic chunk (with an empty delta) immediately before `data: [DONE]`.
+This keeps strict OpenAI-compatible clients from rejecting the post-finish data.
 
 ## Integrate with your harness
 
@@ -242,7 +270,7 @@ elsewhere.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q     # 44 tests, scriptable mock upstreams
+.venv/bin/python -m pytest -q     # 72 tests, scriptable mock upstreams
 ```
 
 ## Caveats

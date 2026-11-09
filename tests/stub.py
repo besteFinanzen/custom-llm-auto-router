@@ -6,6 +6,19 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+def _sse(obj: dict) -> bytes:
+    return b"data: " + json.dumps(obj).encode() + b"\n\n"
+
+
+def _chunk(delta: dict, finish_reason: str | None = None,
+           choices: list | None = None, **extra) -> dict:
+    obj = {"id": "s", "object": "chat.completion.chunk", "created": 1, "model": "m"}
+    obj.update(extra)
+    obj["choices"] = choices if choices is not None else [
+        {"index": 0, "delta": delta, "finish_reason": finish_reason}]
+    return obj
+
+
 class StubHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # silence request logging
         pass
@@ -52,6 +65,21 @@ class StubHandler(BaseHTTPRequestHandler):
                 b'"delta":{},"finish_reason":"stop"}]}\n\n'
                 b"data: [DONE]\n\n"
             )
+            return self._send(200, payload, ctype="text/event-stream")
+        if action == "sse_after_finish":
+            payload = b"".join([
+                _sse(_chunk({"role": "assistant", "content": "hi"})),
+                _sse(_chunk({}, "tool_calls")),
+                _sse(_chunk({"content": "late"})),
+                _sse(_chunk({"reasoning_content": "thinking"})),
+                _sse(_chunk({"tool_calls": [{"index": 0, "id": "call_1",
+                                              "type": "function",
+                                              "function": {"name": "f",
+                                                           "arguments": "{}"}}]})),
+                _sse(_chunk({}, choices=[], usage={"prompt_tokens": 3,
+                                                   "completion_tokens": 4})),
+                b"data: [DONE]\n\n",
+            ])
             return self._send(200, payload, ctype="text/event-stream")
         return self._send(200, {
             "id": "c", "object": "chat.completion",

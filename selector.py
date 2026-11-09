@@ -55,11 +55,23 @@ def score(model: Model, preset: dict, ranks: Ranks) -> float:
 
 
 def effective(model: Model, ranks: Ranks) -> tuple[float, float, int, bool]:
-    """(cost_in, cost_out, context, tools) with ranks.json data overriding catalog."""
+    """(cost_in, cost_out, context, tools) with ranks.json data overriding catalog.
+
+    `:free` upstreams are always free: models.dev sometimes lists only the paid
+    base model, and stale price data must not push free models over a $0 ceiling.
+    An explicit cost_override still wins.
+    """
     d = ranks.components(model.id).get("data") or {}
+    if model.cost_override is not None:
+        cost_in = cost_out = float(model.cost_override)
+    elif str(getattr(model, "upstream", "")).endswith(":free"):
+        cost_in = cost_out = 0.0
+    else:
+        cost_in = float(d.get("cost_in", model.cost_in))
+        cost_out = float(d.get("cost_out", model.cost_out))
     return (
-        float(model.cost_override) if model.cost_override is not None else float(d.get("cost_in", model.cost_in)),
-        float(model.cost_override) if model.cost_override is not None else float(d.get("cost_out", model.cost_out)),
+        cost_in,
+        cost_out,
         int(d.get("context", model.context)),
         bool(d.get("tools", model.tools)),
     )
@@ -73,6 +85,7 @@ def rank_candidates(catalog: Catalog, preset_name: str, ranks: Ranks, state: Sta
     catalog models. Blocklisted ids are always rejected.
     """
     preset = catalog.presets[preset_name]
+    failures = catalog.policy.get("failures") or {}
     source = models if models is not None else catalog.models
     chosen: list[tuple[float, float, Model]] = []
     rejected: list[dict] = []
@@ -85,7 +98,8 @@ def rank_candidates(catalog: Catalog, preset_name: str, ranks: Ranks, state: Sta
         elif not m.enabled:
             reason = "model disabled in catalog"
         elif not prov.enabled:
-            reason = f"provider disabled (missing {prov.api_key_env})"
+            reason = (f"provider disabled (missing {prov.api_key_env})"
+                      if prov.api_key_env and not prov.api_key else "provider disabled in catalog")
         elif blended_cost(cost_in, cost_out) > float(preset["max_cost"]):
             reason = f"over cost ceiling ({blended_cost(cost_in, cost_out):.2f} > {preset['max_cost']})"
         elif context < int(preset.get("min_context", 0)):
@@ -94,6 +108,10 @@ def rank_candidates(catalog: Catalog, preset_name: str, ranks: Ranks, state: Sta
             reason = "no tool calling"
         elif (rem := state.cooldown_remaining(m.id)) > 0:
             reason = f"cooling down ({rem:.0f}s left)"
+        elif failures.get("enabled", True) and state.is_model_failed(m.id, failures):
+            reason = "model excluded after consecutive failures"
+        elif failures.get("enabled", True) and state.is_provider_failed(m.provider, failures):
+            reason = f"provider {m.provider} excluded after consecutive failures"
         elif not (state.balance_any(m.provider) or {}).get("ok", True):
             reason = "balance exhausted"
         if reason:

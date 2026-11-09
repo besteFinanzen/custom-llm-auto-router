@@ -96,6 +96,7 @@ class State:
         Returns {
             "count": int,
             "first_failure": float,   # epoch seconds
+            "last_failure": float,    # epoch seconds (falls back to first_failure)
             "last_error": str,
             "status": int,
             "provider": str,
@@ -106,6 +107,7 @@ class State:
         return {
             "count": int(entry.get("count") or 0),
             "first_failure": float(entry.get("first_failure") or 0.0),
+            "last_failure": float(entry.get("last_failure") or entry.get("first_failure") or 0.0),
             "last_error": str(entry.get("last_error") or ""),
             "status": int(entry.get("status") or 0),
             "provider": str(entry.get("provider") or ""),
@@ -118,6 +120,7 @@ class State:
         return {
             "count": int(entry.get("count") or 0),
             "first_failure": float(entry.get("first_failure") or 0.0),
+            "last_failure": float(entry.get("last_failure") or entry.get("first_failure") or 0.0),
             "last_error": str(entry.get("last_error") or ""),
             "status": int(entry.get("status") or 0),
         }
@@ -131,6 +134,7 @@ class State:
         entry = scope_map[key]
         entry["count"] = int(entry.get("count") or 0) + 1
         entry.setdefault("first_failure", now)
+        entry["last_failure"] = now
         entry["last_error"] = str(error)[:300]
         entry["status"] = status or 0
         if provider:
@@ -176,10 +180,31 @@ class State:
         if changed:
             await self._save()
 
+    async def reset_failures(self) -> dict:
+        """Clear all failure counters, backoff entries and cooldowns (operator reset).
+
+        Usage/balance accounting is intentionally left untouched.
+        """
+        failures = self._failures()
+        cleared = {
+            "models": len(failures["models"]),
+            "providers": len(failures["providers"]),
+            "backoff": len(self.data.get("backoff") or {}),
+            "cooldowns": len(self.data.get("cooldowns") or {}),
+        }
+        failures["models"].clear()
+        failures["providers"].clear()
+        self.data.setdefault("backoff", {}).clear()
+        self.data.setdefault("cooldowns", {}).clear()
+        await self._save()
+        return cleared
+
     def is_model_failed(self, model_id: str, thresholds: dict) -> bool:
         """Check if a model has exceeded its consecutive failure threshold.
 
-        `thresholds` is the failures policy dict (from catalog.yaml).
+        `thresholds` is the failures policy dict (from catalog.yaml). A positive
+        `model_window_seconds` forgives failures that stopped more than that long
+        ago; the stale entry is dropped so the next failure starts a fresh count.
         """
         policy = thresholds or {}
         if not policy.get("enabled", True):
@@ -187,17 +212,17 @@ class State:
         model_threshold = int(policy.get("model_threshold", 3))
         window = float(policy.get("model_window_seconds") or 0)
         entry = self.get_model_failures(model_id)
-        if entry["count"] < model_threshold:
+        if window > 0 and entry["count"] and (time.time() - entry["last_failure"]) > window:
+            self._failures()["models"].pop(model_id, None)
             return False
-        if window > 0 and (time.time() - entry["first_failure"]) > window:
-            # Stale failures (window elapsed) -> treat as healthy
-            return False
-        return True
+        return entry["count"] >= model_threshold
 
     def is_provider_failed(self, provider_id: str, thresholds: dict) -> bool:
         """Check if a provider has exceeded its consecutive failure threshold.
 
-        `thresholds` is the failures policy dict (from catalog.yaml).
+        `thresholds` is the failures policy dict (from catalog.yaml). A positive
+        `provider_window_seconds` forgives failures that stopped more than that
+        long ago; the stale entry is dropped so the next failure starts fresh.
         """
         policy = thresholds or {}
         if not policy.get("enabled", True):
@@ -205,12 +230,10 @@ class State:
         provider_threshold = int(policy.get("provider_threshold", 5))
         window = float(policy.get("provider_window_seconds") or 0)
         entry = self.get_provider_failures(provider_id)
-        if entry["count"] < provider_threshold:
+        if window > 0 and entry["count"] and (time.time() - entry["last_failure"]) > window:
+            self._failures()["providers"].pop(provider_id, None)
             return False
-        if window > 0 and (time.time() - entry["first_failure"]) > window:
-            # Stale failures (window elapsed) -> treat as healthy
-            return False
-        return True
+        return entry["count"] >= provider_threshold
 
     # ---- exponential backoff ------------------------------------------------
     def set_backoff(self, model_id: str, seconds: float, multiplier: float = 2.0, provider: str = "") -> None:

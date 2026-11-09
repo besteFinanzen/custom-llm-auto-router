@@ -30,8 +30,12 @@ class Provider:
         self.base_url = cfg["base_url"].rstrip("/")
         self.api_key_env = cfg.get("api_key_env")
         self.api_key = os.environ.get(self.api_key_env) if self.api_key_env else None
-        # no api_key_env => endpoint needs no auth; env unset => provider disabled
-        self.enabled = bool(self.api_key) if self.api_key_env else True
+        # explicit enabled:false wins (e.g. a key that is valid only inside the
+        # vendor's own client); otherwise env unset => provider disabled
+        if "enabled" in cfg:
+            self.enabled = bool(cfg["enabled"])
+        else:
+            self.enabled = bool(self.api_key) if self.api_key_env else True
         self.balance = cfg.get("balance") or {"type": "none"}
         self.headers = cfg.get("headers") or {}
         self.discovery = cfg.get("discovery") or {}

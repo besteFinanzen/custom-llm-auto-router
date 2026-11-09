@@ -7,7 +7,7 @@ import pathlib
 import pytest
 
 from catalog import Catalog
-from selector import Ranks, rank_candidates, score
+from selector import Ranks, effective, rank_candidates, score
 from state import State
 
 RAW = {
@@ -114,3 +114,40 @@ def test_no_aa_data_uses_seed(cat, st, rk):
     preset = {"weights": {"oc_retention": 1}}
     s = score(cat.models["p1/free"], preset, rk)  # no components at all -> seed prior
     assert s == 40
+
+
+def test_failed_model_excluded(cat, st, rk):
+    cat.policy["failures"] = {"enabled": True, "model_threshold": 1,
+                              "provider_threshold": 99,
+                              "model_window_seconds": 0, "provider_window_seconds": 0}
+    st.data["failures"]["models"]["p1/free"] = {
+        "count": 1, "first_failure": 9e12, "last_failure": 9e12, "status": 403}
+    cands, rej = rank_candidates(cat, "low", rk, st)
+    assert "p1/free" not in [m.id for m in cands]
+    assert any(r["id"] == "p1/free" and "consecutive failures" in r["reason"]
+               for r in rej)
+
+
+def test_failed_provider_excluded(cat, st, rk):
+    cat.policy["failures"] = {"enabled": True, "model_threshold": 99,
+                              "provider_threshold": 1,
+                              "model_window_seconds": 0, "provider_window_seconds": 0}
+    st.data["failures"]["providers"]["p1"] = {
+        "count": 1, "first_failure": 9e12, "last_failure": 9e12, "status": 403}
+    cands, rej = rank_candidates(cat, "low", rk, st)
+    assert "p1/free" not in [m.id for m in cands]
+    assert any(r["id"] == "p1/free" and "provider p1 excluded" in r["reason"]
+               for r in rej)
+
+
+def test_free_variant_always_costs_zero(cat, st, rk, tmp_path):
+    """A stale/paid models.dev price must not push a ':free' model over a $0 cap."""
+    m = cat.models["p1/free"]
+    m.upstream = "vendor/model:free"
+    (tmp_path / "ranks.json").write_text(json.dumps({"models": {
+        m.id: {"data": {"cost_in": 7.0, "cost_out": 7.0, "context": 100000}},
+    }}))
+    rk.load()
+    assert effective(m, rk)[:2] == (0.0, 0.0)
+    cands, _ = rank_candidates(cat, "low", rk, st)
+    assert m.id in [c.id for c in cands]
