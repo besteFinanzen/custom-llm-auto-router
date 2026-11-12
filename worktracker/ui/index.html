@@ -99,6 +99,11 @@
   .tabs button { background:none; border:1px solid transparent; color:var(--muted);
     padding:5px 11px; border-radius:8px; cursor:pointer; }
   .tabs button.active { color:var(--fg); background:var(--panel2); border-color:var(--line); }
+  dialog { width:min(440px, calc(100% - 32px)); color:var(--fg); background:var(--panel);
+    border:1px solid var(--line); border-radius:12px; padding:22px; }
+  dialog::backdrop { background:rgba(0,0,0,.7); backdrop-filter:blur(3px); }
+  dialog input { width:100%; }
+  #auth-error { color:var(--bad); min-height:20px; margin:0; }
 </style>
 </head>
 <body>
@@ -108,8 +113,25 @@
   <span class="spacer"></span>
   <span class="range" id="range"></span>
   <button class="btn small" id="refresh" title="Reload data">Reload</button>
+  <button class="btn small" id="auth-open" title="Change or sign out the API token">Sign in</button>
 </header>
 <main id="app"><div class="empty">Loading…</div></main>
+<dialog id="auth-dialog" aria-labelledby="auth-title">
+  <form id="auth-form">
+    <h2 id="auth-title">Worktracker access</h2>
+    <p class="muted">Sign in with the value configured as
+      <span class="mono">TRACKER_ADMIN_TOKEN</span> for full control, or
+      <span class="mono">TRACKER_READ_TOKEN</span> for read-only access.</p>
+    <label for="auth-token">API token</label>
+    <input id="auth-token" type="password" autocomplete="current-password"
+           spellcheck="false" autocapitalize="none" placeholder="paste your tracker token">
+    <p id="auth-error" role="alert"></p>
+    <div class="row right">
+      <button class="btn" type="button" id="auth-signout">Sign out</button>
+      <button class="btn primary" type="submit" id="auth-submit">Connect</button>
+    </div>
+  </form>
+</dialog>
 <div class="toast" id="toast"></div>
 <script>
 "use strict";
@@ -157,11 +179,20 @@ function toast(msg, err) {
   clearTimeout(toast._t); toast._t = setTimeout(() => el.className = "toast", 3200);
 }
 async function api(path, opts) {
-  const res = await fetch(API + path, Object.assign({headers: {"Content-Type": "application/json"}}, opts || {}));
+  const options = Object.assign({}, opts || {});
+  const headers = Object.assign({"Content-Type": "application/json"}, options.headers || {});
+  if (authToken) headers.Authorization = "Bearer " + authToken;
+  options.headers = headers;
+  const res = await fetch(API + path, options);
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = {raw: text}; }
   if (!res.ok) {
+    if (res.status === 401) {
+      const detail = data && data.detail && String(data.detail) || "invalid or missing API token";
+      clearToken();
+      showAuth(detail);
+    }
     const detail = data && (data.detail && (data.detail.message || JSON.stringify(data.detail)) || data.error);
     throw new Error(typeof detail === "string" ? detail : (res.status + " " + res.statusText));
   }
@@ -219,10 +250,61 @@ function route() {
   const [view, ...rest] = hash.split("/");
   state.view = VIEWS.some(v => v[0] === view) ? view : "overview";
   state.args = rest;
+  if (!authScope) { showAuth(); return; }
   render();
 }
 function go(path) { location.hash = path; }
 window.addEventListener("hashchange", route);
+
+// ---------------------------------------------------------------- authentication
+const TOKEN_STORAGE = "worktracker.apiToken";
+let authToken = "";
+let authScope = "";
+try { authToken = sessionStorage.getItem(TOKEN_STORAGE) || ""; } catch { authToken = ""; }
+
+function renderIdentity() {
+  const labels = {open: "Open access", read: "Read only", editor: "Editor", hook: "Hook", admin: "Admin"};
+  const button = document.getElementById("auth-open");
+  if (button) button.textContent = labels[authScope] || "Sign in";
+}
+function storeToken(token) {
+  authToken = token;
+  try {
+    if (token) sessionStorage.setItem(TOKEN_STORAGE, token);
+    else sessionStorage.removeItem(TOKEN_STORAGE);
+  } catch { /* storage may be unavailable; the token stays in this page only */ }
+}
+function clearToken() {
+  authToken = "";
+  authScope = "";
+  storeToken("");
+  renderIdentity();
+}
+function showAuth(message) {
+  const dialog = document.getElementById("auth-dialog");
+  const error = document.getElementById("auth-error");
+  if (!dialog || !error) return;
+  error.textContent = message || "";
+  if (!dialog.open) dialog.showModal();
+}
+async function authenticate(token) {
+  const candidate = String(token || "").trim();
+  storeToken(candidate);
+  const me = await api("/whoami");
+  authScope = (me && me.scope) || "read";
+  renderIdentity();
+  const dialog = document.getElementById("auth-dialog");
+  if (dialog && dialog.open) dialog.close();
+  const input = document.getElementById("auth-token");
+  if (input) input.value = "";
+  return true;
+}
+function signOut() {
+  clearToken();
+  const app = document.getElementById("app");
+  if (app) app.textContent = "Signed out.";
+  showAuth("Signed out. Enter a tracker token to reconnect.");
+}
 </script>
 
 <script>
@@ -230,6 +312,7 @@ window.addEventListener("hashchange", route);
 const views = {};
 
 async function render() {
+  if (!authScope) return;
   renderNav();
   const app = document.getElementById("app");
   const fn = views[state.view] || views.overview;
@@ -835,7 +918,36 @@ views.settings = async () => {
   return wrap;
 };
 
-route();
+// ---------------------------------------------------------------- authentication bootstrap
+async function start() {
+  const dialog = document.getElementById("auth-dialog");
+  const form = document.getElementById("auth-form");
+  const submit = document.getElementById("auth-submit");
+  const input = document.getElementById("auth-token");
+  if (dialog) dialog.oncancel = e => { if (!authScope) e.preventDefault(); };
+  if (form) form.onsubmit = async e => {
+    e.preventDefault();
+    if (submit) submit.disabled = true;
+    try {
+      if (await authenticate(input ? input.value : "")) route();
+    } catch (err) {
+      showAuth("Connection failed: " + (err && err.message ? err.message : "unknown error"));
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  };
+  const signOutButton = document.getElementById("auth-signout");
+  if (signOutButton) signOutButton.onclick = () => signOut();
+  const open = document.getElementById("auth-open");
+  if (open) open.onclick = () => showAuth(authScope ? "Enter a different tracker token to switch." : "");
+  try {
+    await authenticate(authToken);
+  } catch (err) {
+    showAuth("Connection failed: " + (err && err.message ? err.message : "unknown error"));
+  }
+  route();
+}
+start();
 </script>
 </body>
 </html>

@@ -103,7 +103,9 @@ read; `editor`/`hook` may ingest heartbeats, snapshots, tool events, commits and
 usage; only `admin` may edit budgets and job profiles. An empty token disables
 that scope's requirement, so set all four in production.
 
-- Dashboard: `https://<domain>/worktracker`
+- Dashboard: `https://<domain>/worktracker` — the first visit asks for an API
+  token; sign in with `TRACKER_ADMIN_TOKEN` for full control (a read token works
+  for viewing)
 - Health (includes tracker status): `https://<domain>/healthz`
 - WakaTime-compatible API for the official VS Code extension: `https://<domain>/api/v1`
 

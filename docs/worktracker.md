@@ -6,7 +6,7 @@ tools and human/AI/mixed time — plus budgets, benchmarks and job profiles. It
 runs in the same image as the router (`APP_MODE=all`, the default), or as a
 standalone service (`APP_MODE=tracker`).
 
-- UI: `/worktracker`
+- UI: `/worktracker` — prompts for an API token when authentication is enabled
 - WakaTime-compatible API (official VS Code extension): `/api/v1`
 - Health (includes tracker status): `/healthz`
 - Deployment guide: [`deploy/DOKPLOY.md`](../deploy/DOKPLOY.md)

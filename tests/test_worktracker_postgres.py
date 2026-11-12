@@ -60,7 +60,11 @@ def _usage(event_id: str, **fields) -> dict:
 
 
 def test_usage_is_immutable_and_statistics_keep_historical_cost(store):
-    ts = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)
+    # Anchor events to the tracker's local "today": a UTC timestamp one hour ago
+    # can already belong to yesterday in Europe/Berlin, which would make the
+    # days=1 calendar-day scope (and today_summary) legitimately exclude it.
+    today = dt.datetime.now(store.settings.tz).date()
+    ts = dt.datetime.combine(today, dt.time.min, tzinfo=store.settings.tz)
     store.record_usage_event(_usage("11111111-1111-1111-1111-111111111111",
                                     ts=ts.isoformat(), cost=5.0, latency_ms=1000,
                                     ttft_ms=200))
@@ -69,8 +73,8 @@ def test_usage_is_immutable_and_statistics_keep_historical_cost(store):
                                     ts=ts.isoformat(), cost=99.0, latency_ms=99999,
                                     outcome="failure"))
     store.record_usage_event(_usage("22222222-2222-2222-2222-222222222222",
-                                    ts=(ts + dt.timedelta(minutes=5)).isoformat(),
-                                    cost=1.0, latency_ms=3000, ttft_ms=600,
+                                    ts=ts.isoformat(), cost=1.0, latency_ms=3000,
+                                    ttft_ms=600,
                                     outcome="failure", tokens_in=20, tokens_out=10))
 
     detail = store.model_detail("fake/model", days=30)

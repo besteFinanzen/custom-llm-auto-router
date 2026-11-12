@@ -169,6 +169,10 @@ attribution). It adds project/branch budgets with warnings and hard blocks,
 day/week heatmaps, live presence, model/provider statistics and UI-editable job
 profiles backed by the benchmark refresh.
 
+Open `/worktracker` and sign in when prompted. The UI stores the token in the
+browser tab's session storage and sends it as `Authorization: Bearer …`; use
+`TRACKER_ADMIN_TOKEN` for full control, or `TRACKER_READ_TOKEN` for viewing.
+
 The same image runs three roles (`APP_MODE=all|router|tracker`); the router-only
 role forwards usage and budget checks to `TRACKER_REMOTE_URL`. Configure
 `TRACKER_DATABASE_URL` and the `TRACKER_ADMIN_TOKEN` / `TRACKER_EDITOR_KEY` /

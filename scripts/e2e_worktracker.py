@@ -191,6 +191,9 @@ def main() -> int:
         ok(f"GET {name}", bool(body), json.dumps(body)[:180])
     html = call("GET", "/worktracker", headers=READ, raw=True)
     ok("UI served", "<html" in html.lower() and len(html) > 5000, f"{len(html)} bytes")
+    ok("UI authenticates browser requests",
+       'id="auth-dialog"' in html and "worktracker.apiToken" in html,
+       "token dialog and Authorization header wiring present")
 
     failed = [name for name, passed in checks if not passed]
     print(f"\n{len(checks) - len(failed)}/{len(checks)} E2E checks passed against {BASE}")
