@@ -51,6 +51,12 @@ class Provider:
 
 
 class Model:
+    # Declared here so type checkers see the attributes the catalog YAML always
+    # supplies; ``__init__`` still copies arbitrary extra keys via setattr.
+    id: str
+    provider: str
+    upstream: str
+
     def __init__(self, cfg: dict):
         self.rank_override = None
         self.cost_override = None
@@ -83,7 +89,7 @@ class Catalog:
                 raise ValueError(f"model {m.id}: unknown provider {m.provider}")
 
     @classmethod
-    def load(cls, path: pathlib.Path | None = None) -> "Catalog":
+    def load(cls, path: pathlib.Path | None = None) -> Catalog:
         return cls(yaml.safe_load((path or ROOT / "catalog.yaml").read_text()))
 
     def disabled_providers(self) -> list[str]:

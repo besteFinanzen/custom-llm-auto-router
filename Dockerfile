@@ -12,6 +12,10 @@ RUN useradd --uid 10001 --create-home router && mkdir /data && chown router:rout
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 COPY --chown=router:router *.py *.html *.yaml ./
+# The tracker ships its own package (routes, store, UI) and the git/OpenCode
+# integrations; copy both trees so APP_MODE=all|tracker works out of the box.
+COPY --chown=router:router worktracker/ ./worktracker/
+COPY --chown=router:router integrations/ ./integrations/
 
 USER router
 VOLUME ["/data"]

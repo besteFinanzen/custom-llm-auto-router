@@ -17,6 +17,12 @@ policy:
   request_timeout_seconds: 300
   max_failovers: 3              # upstreams tried per request
 
+  # context-window management: required context = ceil(prompt * headroom) + output
+  # reserve. Compaction/title calls are small; large primary prompts escalate to a
+  # bigger-context preset instead of failing.
+  context_headroom: 1.10        # safety margin on the estimated prompt size
+  output_reserve_tokens: 4096   # reserve when the request has no max_tokens
+
   failures:
     enabled: true               # enable consecutive-failure tracking
     model_threshold: 3           # consecutive failures to exclude model
@@ -104,7 +110,8 @@ presets:
 
 models:
   # ---- e-Infra (academic endpoint, seed cost 0) ------------------------------
-  - {id: e-infra/kimi,             provider: e_infra, upstream: kimi,             cost_in: 0, cost_out: 0, seed_rank: 60, context: 1048576, output: 49152, tools: true, image: true,  aa_slug: null, oc_id: null}
+  # latency-heavy upstream: manual rank veto keeps it below the faster free models
+  - {id: e-infra/kimi,             provider: e_infra, upstream: kimi,             cost_in: 0, cost_out: 0, seed_rank: 60, rank_override: 35, context: 1048576, output: 49152, tools: true, image: true,  aa_slug: null, oc_id: null}
   - {id: e-infra/glm,              provider: e_infra, upstream: glm,              cost_in: 0, cost_out: 0, seed_rank: 55, context: 1048576, output: 65536, tools: true, image: false, aa_slug: null, oc_id: null}
   - {id: e-infra/deepseek-thinking,provider: e_infra, upstream: deepseek-thinking,cost_in: 0, cost_out: 0, seed_rank: 52, context: 1048576, output: 65536, tools: true, image: false, aa_slug: null, oc_id: null}
   - {id: e-infra/deepseek,         provider: e_infra, upstream: deepseek,         cost_in: 0, cost_out: 0, seed_rank: 48, context: 1048576, output: 65536, tools: true, image: false, aa_slug: null, oc_id: null}

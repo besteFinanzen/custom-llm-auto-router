@@ -5,8 +5,8 @@ import datetime
 import json
 import time
 
-from tests.conftest import build_client, run, write_catalog
 from state import State
+from tests.conftest import build_client, run, write_catalog
 
 BODY = {"model": "high", "messages": [{"role": "user", "content": "hi"}]}
 

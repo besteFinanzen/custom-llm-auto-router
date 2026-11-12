@@ -1,0 +1,9 @@
+# Developer tooling only — not installed into the application image.
+# Pinned to match the versions CI uses (see .github/workflows/ci.yml).
+-r requirements.txt
+pre-commit>=4.0
+pytest-cov==7.1.0
+ruff==0.17.5
+mypy==2.4.1
+pip-audit==2.9.0
+types-PyYAML

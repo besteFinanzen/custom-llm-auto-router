@@ -26,6 +26,11 @@ DIMENSIONS = {
 
 def _today() -> dt.date:
     return dt.date.today()
+def _first_col(row: tuple | None) -> Any:
+    """First column of an aggregate row (aggregates always yield exactly one row)."""
+    return row[0] if row else None
+
+
 
 
 def _date(value: Any) -> dt.date:
@@ -271,7 +276,8 @@ class PostgresUsage:
     # ---- reads -----------------------------------------------------------
     @staticmethod
     def _scope(days: int, project: str | None) -> tuple[str, list[Any]]:
-        where, params = [], []
+        where: list[str] = []
+        params: list[Any] = []
         if days > 0:
             where.append("day >= %s")
             params.append(_today() - dt.timedelta(days=days - 1))
@@ -441,9 +447,10 @@ class PostgresUsage:
             summary = self._summary(days, project)
             all_time = self._summary(0, project)
             events_all_time = self._event_aggregate(0, project)
-            first = self._conn.execute("SELECT min(day) FROM usage_events").fetchone()[0]
+            first = _first_col(self._conn.execute("SELECT min(day) FROM usage_events").fetchone())
             if not project:
-                legacy_first = self._conn.execute("SELECT min(day) FROM legacy_daily").fetchone()[0]
+                legacy_first = _first_col(
+                    self._conn.execute("SELECT min(day) FROM legacy_daily").fetchone())
                 if legacy_first and (not first or legacy_first < first):
                     first = legacy_first
             projects = self._projects(0, None)
@@ -478,6 +485,7 @@ class PostgresUsage:
                 "SELECT (SELECT count(*) FROM usage_events), "
                 "(SELECT count(*) FROM work_events), "
                 "(SELECT min(day) FROM usage_events)").fetchone()
+            assert row is not None  # bare SELECTs always return one row
             migrated = bool(self._conn.execute(
                 "SELECT 1 FROM router_meta WHERE key = %s", (MIGRATION_KEY,)).fetchone())
         return {"enabled": True, "events": int(row[0]), "work_events": int(row[1]),
@@ -487,7 +495,7 @@ class PostgresUsage:
         """Test helper; intentionally not exposed through HTTP."""
         with self._lock, self._conn.transaction():
             self._conn.execute("TRUNCATE usage_events, work_events, legacy_totals, "
-                               "legacy_daily, legacy_provider_daily, router_meta")
+                               "legacy_daily, legacy_provider_daily, router_meta CASCADE")
 
     @staticmethod
     def dumps(value: Any) -> str:

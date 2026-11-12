@@ -1,0 +1,66 @@
+# Job profiles: named routing intents for orchestrators.
+#
+# A job overrides the preset a request would normally use and adds hard floors
+# on benchmark scores plus observed constraints (latency, success rate). The
+# gateway picks the job from `x_oc.job` in the request body or the `x-oc-job`
+# header, e.g.
+#
+#   {"model": "high", "messages": [...], "x_oc": {"job": "review"}}
+#
+# These YAML defaults are the versioned baseline; overrides created in the UI
+# live in PostgreSQL (tracker_job_profiles) and win per field. `GET
+# /worktracker/api/jobs` returns the merged view with `source: yaml|override`;
+# `GET /worktracker/api/jobs/export` exports everything for version control.
+#
+# Fields:
+#   base_preset         preset supplying cost ceiling and ranking weights
+#   min_scores          hard floors (0-100) on rank components; models missing a
+#                       component are rejected (use sparingly, e.g. aa_coding)
+#   weights             optional override of the preset's component weights
+#   min_context         minimum context window (tokens)
+#   max_cost            blended $/1M ceiling for this job
+#   require_tools       only models with tool calling
+#   max_latency_p95_ms  observed 24h p95 latency ceiling (needs >= 5 samples)
+#   min_success_rate    0-1, observed 24h success floor (needs >= 5 samples)
+#   on_no_match         error | fallback (relax constraints) | cheapest
+#
+# Components: aa_intelligence, aa_coding, aa_agentic, oc_retention,
+# oc_popularity, and benchmark components (aider_polyglot, swe_bench_verified,
+# terminal_bench, bfcl, livebench) once refresh.py has fetched them.
+jobs:
+  interactive:
+    description: Fast tool-calling loop (coding chat, small edits)
+    base_preset: medium
+    min_scores: {oc_popularity: 5}
+    max_latency_p95_ms: 45000
+    min_success_rate: 0.9
+    on_no_match: fallback
+
+  planning:
+    description: Architecture and multi-step planning; quality over speed
+    base_preset: orchestrator
+    min_scores: {aa_coding: 45}
+    require_tools: true
+    min_context: 131072
+    on_no_match: error
+
+  review:
+    description: Code review and diff analysis; large context, reliable
+    base_preset: high
+    min_scores: {aa_coding: 40}
+    min_context: 131072
+    require_tools: true
+    min_success_rate: 0.85
+    on_no_match: fallback
+
+  long-context:
+    description: Whole-repository or log analysis
+    base_preset: high
+    min_context: 200000
+    on_no_match: cheapest
+
+  cheap-batch:
+    description: Bulk generate/compaction work where cost dominates
+    base_preset: low
+    max_cost: 0.6
+    on_no_match: cheapest

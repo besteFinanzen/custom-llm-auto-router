@@ -77,3 +77,102 @@ must not be exposed to an untrusted network.
 If no database URL is set, routing and today's JSON aggregates still work, but
 history endpoints return `503` and the live page clearly reports that durable
 tracking is disabled.
+
+## 4. Work tracker: single-app (recommended)
+
+The same image runs the router **and** the work tracker in one process. This is
+the default (`APP_MODE=all`) and the simplest Dokploy topology: one application,
+one volume, one database.
+
+```dotenv
+APP_MODE=all
+TRACKER_DATABASE_URL=postgresql://router:REPLACE_ME@postgres:5432/router
+TRACKER_ADMIN_TOKEN=change-me-admin
+TRACKER_EDITOR_KEY=change-me-editor
+TRACKER_HOOK_TOKEN=change-me-hook
+TRACKER_READ_TOKEN=change-me-read
+TRACKER_ATTRIBUTION_MODE=warn
+```
+
+`TRACKER_DATABASE_URL` may equal `DATABASE_URL` (shared database) or point at a
+dedicated analytics database. When it is empty the tracker is disabled and the
+router still serves `/v1` normally.
+
+Scopes are ordered `admin > editor/hook > read`. Every authenticated token may
+read; `editor`/`hook` may ingest heartbeats, snapshots, tool events, commits and
+usage; only `admin` may edit budgets and job profiles. An empty token disables
+that scope's requirement, so set all four in production.
+
+- Dashboard: `https://<domain>/worktracker`
+- Health (includes tracker status): `https://<domain>/healthz`
+- WakaTime-compatible API for the official VS Code extension: `https://<domain>/api/v1`
+
+## 5. Work tracker: split deployment (APP_MODE=router | tracker)
+
+Run two Dokploy applications from the same image when the router and tracker must
+scale or be secured independently.
+
+**Tracker application** (`APP_MODE=tracker`): mount `/data`, set
+`TRACKER_DATABASE_URL` and the four tokens, expose port `4141`. It serves
+`/worktracker`, `/api/v1` (WakaTime) and `/healthz`; it does **not** route model
+requests.
+
+**Router application** (`APP_MODE=router`): set `TRACKER_REMOTE_URL` to the
+tracker's private URL and reuse one of the tracker tokens as the bearer:
+
+```dotenv
+APP_MODE=router
+TRACKER_REMOTE_URL=http://worktracker.internal:4141
+TRACKER_HOOK_TOKEN=change-me-hook
+```
+
+In router mode the router never opens a local analytics database. It mirrors each
+usage event to `<TRACKER_REMOTE_URL>/worktracker/api/usage` and evaluates budgets
+via `<TRACKER_REMOTE_URL>/worktracker/api/budget/check`. If the tracker is
+unreachable the budget check **fails open** by default; set
+`TRACKER_BUDGET_FAIL_CLOSED=true` to block requests instead.
+
+## 6. Schema migrations and backfill
+
+Opening the tracker (or running any command) applies the idempotent schema, so a
+fresh deploy migrates itself on first request. To migrate explicitly, backfill
+project rows for pre-existing usage, or re-derive commit attribution, run the
+bundled CLI inside the container:
+
+```bash
+python -m worktracker migrate      # create/upgrade every tracker table
+python -m worktracker backfill     # project rows for legacy usage events
+python -m worktracker recompute --days 90   # re-derive commit -> AI attribution
+python -m worktracker status       # connectivity check + row counts (JSON)
+```
+
+## 7. Track OpenCode, git commits and VS Code
+
+1. **OpenCode plugin** — install `integrations/opencode/plugins/router-tags`
+   (see its README). It adds session, project, worktree and job headers to every
+   routed request, so usage is attributed to the right project automatically.
+2. **Git hook (optional)** — install the stdlib `post-commit` hook, which prompts
+   for the tracker URL and token, validates them, and stores the token in
+   `.git/worktracker.env` (mode `0600`):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/besteFinanzen/custom-llm-auto-router/feat/worktracker/integrations/git/install-hook.sh | sh
+   ```
+
+   (Or run `sh integrations/git/install-hook.sh` from a checkout. Point
+   `TRACKER_PUBLIC_URL` at `https://<domain>` so the installer prints the exact
+   command for your deployment.)
+
+   See `integrations/git/README.md` for `--dry-run`, `--uninstall`, and the
+   non-interactive `--url` / `--token` flags.
+3. **VS Code** — point the official WakaTime extension at `https://<domain>/api/v1`
+   with a tracker token. Heartbeats feed presence, heatmaps and time accounting.
+
+## 8. Budgets and job profiles
+
+Budgets are per project or branch, in USD, tokens or requests, for daily, weekly,
+monthly or total periods. A budget warns at `warn_pct`, then hard-blocks when
+`hard_block` is set (the router returns an actionable `budget_exceeded` error and
+`/v1` calls fail with `429`). Job profiles (score floors, context/cost limits,
+latency p95 and success-rate gates) are edited in the UI and stored in
+PostgreSQL, overriding the YAML defaults in `jobs.yaml`.

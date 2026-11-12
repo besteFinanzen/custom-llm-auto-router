@@ -99,11 +99,11 @@ def best_match(target: str, index: dict[str, list[str]],
         return best_k, round(best_s, 3), "similar", alts
 
     # family: target is a token-prefix of longer names ("kimi" -> "kimi-k2-5")
-    family = []
+    family: list[str] = []
     prefix = next(iter(tb))
     for key, als in index.items():
-        for cand in [normalize(key)] + [base_name(a) for a in als]:
-            if cand.startswith(prefix + "-"):
+        for name in [normalize(key)] + [base_name(a) for a in als]:
+            if name.startswith(prefix + "-"):
                 family.append(key)
                 break
     family = sorted(set(family))

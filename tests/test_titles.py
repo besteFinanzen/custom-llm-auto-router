@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from tests.conftest import build_client, run, write_catalog  # noqa: F401
+from tests.conftest import build_client, run, write_catalog
 from titles import TitleCache, parse_sessions, title_cmd
 
 

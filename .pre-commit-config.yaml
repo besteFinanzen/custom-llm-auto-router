@@ -1,0 +1,26 @@
+# Fast local checks. CI runs the same commands plus mypy, the coverage gate,
+# the PostgreSQL integration suite and the OpenCode plugin tests.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+        args: [--check]
+        # The codebase predates ruff-format; keep the hook report-only for now.
+        stages: [manual]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^(catalog\.yaml|jobs\.yaml)$
+      - id: trailing-whitespace
+        exclude: ^(worktracker/ui/|.*\.md$)
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]

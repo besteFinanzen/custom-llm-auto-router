@@ -10,6 +10,7 @@ import json
 import pathlib
 import tempfile
 import time
+from typing import Any
 
 USAGE_KEEP_DAYS = 3
 
@@ -20,7 +21,7 @@ class State:
         self.path.mkdir(parents=True, exist_ok=True)
         self.file = self.path / "state.json"
         self.lock = asyncio.Lock()
-        self.data = {"cooldowns": {}, "usage": {}, "balances": {},
+        self.data: dict[str, Any] = {"cooldowns": {}, "usage": {}, "balances": {},
                      "totals": {}, "by_preset": {}, "by_model": {}, "daily": {},
                      "daily_history": {},
                      # consecutive failure tracking + exponential backoff (v2 schema)
@@ -127,7 +128,8 @@ class State:
     def _bump(self, scope: str, key: str, error: str, status: int, provider: str = "") -> dict:
         """Increment failure count for (scope,key); returns the updated entry."""
         failures = self._failures()
-        scope_map = failures.get("models" if scope == "models" else "providers")
+        scope_map: dict[str, dict] = failures.setdefault(
+            "models" if scope == "models" else "providers", {})
         scope_map.setdefault(key, {})
         now = time.time()
         entry = scope_map[key]
@@ -300,7 +302,7 @@ class State:
             agg["cost"] = round(agg.get("cost", 0.0) + cost_usd, 6)
             agg["in"] = int(agg.get("in") or 0) + tokens_in
             agg["out"] = int(agg.get("out") or 0) + tokens_out
-        daily = self.data.get("daily")
+        daily: dict[str, Any] = self.data.get("daily") or {}
         if not daily or daily.get("date") != self._today():
             daily = {"date": self._today(), "by_preset": {}, "by_model": {},
                      "by_session": {}, "buckets": {}}

@@ -16,6 +16,7 @@ import json
 import math
 import pathlib
 import tempfile
+from typing import Any
 
 import httpx
 
@@ -126,7 +127,7 @@ def sync_discovered(catalog: Catalog, state_dir: pathlib.Path,
     excludes = [p.lower() for p in pol.get("exclude_patterns", DEFAULT_EXCLUDES)]
     seed = float(pol.get("seed_rank", 30))
     path = state_dir / "discovered.json"
-    old = {"models": {}, "providers": {}}
+    old: dict[str, Any] = {"models": {}, "providers": {}}
     if path.exists():
         try:
             old = json.loads(path.read_text())

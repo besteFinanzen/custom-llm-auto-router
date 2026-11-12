@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worktracker</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a; --fg:#e6e9ef;
+    --muted:#93a0b4; --accent:#5b9dff; --good:#48c78e; --warn:#f0b429; --bad:#ef5b5b;
+    --ai:#a78bfa; --human:#34d399;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  header { position:sticky; top:0; z-index:5; display:flex; gap:16px; align-items:center;
+    padding:10px 18px; background:rgba(15,17,21,.94); border-bottom:1px solid var(--line);
+    backdrop-filter:blur(6px); flex-wrap:wrap; }
+  header .brand { font-weight:700; letter-spacing:.4px; }
+  header nav { display:flex; gap:4px; flex-wrap:wrap; }
+  header nav button { background:none; border:1px solid transparent; color:var(--muted);
+    padding:6px 12px; border-radius:8px; cursor:pointer; font-size:13px; }
+  header nav button:hover { color:var(--fg); background:var(--panel2); }
+  header nav button.active { color:var(--fg); background:var(--panel2); border-color:var(--line); }
+  header .spacer { flex:1; }
+  header .range { display:flex; gap:6px; align-items:center; color:var(--muted); }
+  main { padding:18px; max-width:1500px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 14px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  h3 { font-size:12px; margin:0 0 8px; color:var(--muted); font-weight:600;
+    text-transform:uppercase; letter-spacing:.5px; }
+  .grid { display:grid; gap:14px; }
+  .cols-2 { grid-template-columns:repeat(auto-fit, minmax(380px, 1fr)); }
+  .cols-3 { grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .panel.tight { padding:10px 12px; }
+  .kpis { display:grid; gap:14px; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .kpi .v { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .kpi .l { color:var(--muted); font-size:12px; }
+  .kpi .s { color:var(--muted); font-size:11px; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--muted); font-weight:600; font-size:11px;
+    text-transform:uppercase; letter-spacing:.4px; border-bottom:1px solid var(--line);
+    padding:6px 8px; white-space:nowrap; }
+  td { padding:6px 8px; border-bottom:1px solid rgba(42,47,58,.55); vertical-align:top; }
+  tr.click { cursor:pointer; }
+  tr.click:hover td { background:var(--panel2); }
+  .num { text-align:right; font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:12px; }
+  .muted { color:var(--muted); }
+  .mono { font-family:var(--mono); font-size:12px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px;
+    border:1px solid var(--line); color:var(--muted); }
+  .pill.good { color:var(--good); border-color:rgba(72,199,142,.4); }
+  .pill.warn { color:var(--warn); border-color:rgba(240,180,41,.4); }
+  .pill.bad { color:var(--bad); border-color:rgba(239,91,91,.4); }
+  .bar { height:6px; border-radius:999px; background:var(--panel2); overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .bar.warn > i { background:var(--warn); }
+  .bar.bad > i { background:var(--bad); }
+  input, select, textarea, button { font:inherit; }
+  input, select, textarea { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+    border-radius:8px; padding:6px 9px; }
+  textarea { font-family:var(--mono); font-size:12px; min-height:110px; width:100%; }
+  .btn { background:var(--panel2); color:var(--fg); border:1px solid var(--line);
+    border-radius:8px; padding:6px 12px; cursor:pointer; }
+  .btn:hover { border-color:var(--accent); }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#0b1220; font-weight:600; }
+  .btn.small { padding:3px 8px; font-size:12px; }
+  .toast { position:fixed; right:18px; bottom:18px; background:var(--panel2);
+    border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:8px;
+    padding:10px 14px; opacity:0; transition:opacity .2s; max-width:420px; z-index:10; }
+  .toast.show { opacity:1; }
+  .toast.err { border-left-color:var(--bad); }
+  .heat { display:grid; grid-template-columns:34px repeat(24, 1fr); gap:2px; font-size:10px; }
+  .heat .lab { color:var(--muted); text-align:right; padding-right:4px; line-height:14px; }
+  .heat .hr { color:var(--muted); text-align:center; }
+  .heat .cell { height:14px; border-radius:3px; background:var(--panel2); }
+  .cal { display:grid; grid-auto-flow:column; grid-template-rows:repeat(7, 12px); gap:2px; }
+  .cal .cell { width:12px; height:12px; border-radius:2px; background:var(--panel2); }
+  .legend { display:flex; gap:12px; align-items:center; color:var(--muted); font-size:12px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; }
+  .split { display:flex; gap:6px; flex-wrap:wrap; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:12px; background:var(--panel2); }
+  .card h4 { margin:0 0 6px; font-size:14px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .right { margin-left:auto; }
+  .big { font-size:18px; font-weight:700; }
+  .live-dot { width:8px; height:8px; border-radius:50%; background:var(--good);
+    display:inline-block; box-shadow:0 0 0 3px rgba(72,199,142,.18); }
+  svg.spark { display:block; }
+  .scroll { overflow-x:auto; }
+  .empty { color:var(--muted); padding:18px; text-align:center; }
+  .crumb { color:var(--muted); font-size:12px; margin-bottom:10px; }
+  .tabs { display:flex; gap:4px; margin-bottom:12px; flex-wrap:wrap; }
+  .tabs button { background:none; border:1px solid transparent; color:var(--muted);
+    padding:5px 11px; border-radius:8px; cursor:pointer; }
+  .tabs button.active { color:var(--fg); background:var(--panel2); border-color:var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Worktracker</span>
+  <nav id="nav"></nav>
+  <span class="spacer"></span>
+  <span class="range" id="range"></span>
+  <button class="btn small" id="refresh" title="Reload data">Reload</button>
+</header>
+<main id="app"><div class="empty">Loading…</div></main>
+<div class="toast" id="toast"></div>
+<script>
+"use strict";
+const API = "/worktracker/api";
+const state = { view: "overview", days: 30, data: {}, config: null, key: "" };
+
+function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function usd(v) { const n = Number(v || 0); return n >= 100 ? "$" + n.toFixed(2) : n >= 1 ? "$" + n.toFixed(2) : "$" + n.toFixed(4); }
+function num(v) { return Number(v || 0).toLocaleString(); }
+function compact(v) {
+  const n = Number(v || 0);
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + "B";
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(Math.round(n));
+}
+function dur(seconds) {
+  const s = Math.max(0, Math.round(Number(seconds || 0)));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m";
+  const hr = Math.floor(m / 60);
+  const mm = m % 60;
+  if (hr < 24) return hr + "h " + mm + "m";
+  return Math.floor(hr / 24) + "d " + (hr % 24) + "h";
+}
+function when(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (isNaN(d)) return esc(ts);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff >= 0 && diff < 90) return Math.max(0, Math.round(diff)) + "s ago";
+  if (diff >= 0 && diff < 5400) return Math.round(diff / 60) + "m ago";
+  return d.toLocaleString(undefined, {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"});
+}
+function shortPath(p, redact) {
+  if (!p) return "—";
+  if (redact) return p.replace(/^.*[\/\\]/, "…/");
+  return p.length > 60 ? "…" + p.slice(-58) : p;
+}
+function toast(msg, err) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.className = "toast show" + (err ? " err" : "");
+  clearTimeout(toast._t); toast._t = setTimeout(() => el.className = "toast", 3200);
+}
+async function api(path, opts) {
+  const res = await fetch(API + path, Object.assign({headers: {"Content-Type": "application/json"}}, opts || {}));
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = {raw: text}; }
+  if (!res.ok) {
+    const detail = data && (data.detail && (data.detail.message || JSON.stringify(data.detail)) || data.error);
+    throw new Error(typeof detail === "string" ? detail : (res.status + " " + res.statusText));
+  }
+  return data;
+}
+function link(href, label) { return '<a href="#' + href + '">' + esc(label) + "</a>"; }
+function bar(pct, cls) {
+  const p = Math.max(0, Math.min(100, Number(pct || 0)));
+  return '<div class="bar ' + (cls || "") + '"><i style="width:' + p + '%"></i></div>';
+}
+function sparkline(points, opts) {
+  const o = opts || {}; const w = o.w || 560; const ht = o.h || 80;
+  if (!points || !points.length) return '<div class="empty">no data</div>';
+  const key = o.key || "cost";
+  let max = Math.max(...points.map(p => Number(p[key] || 0)), o.min || 0);
+  if (!max) max = 1;
+  const step = points.length > 1 ? w / (points.length - 1) : w;
+  const ys = points.map((p, i) => [i * step, ht - (Number(p[key] || 0) / max) * (ht - 6)]);
+  const line = ys.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+  const area = line + " L" + w + " " + ht + " L0 " + ht + " Z";
+  return '<svg class="spark" viewBox="0 0 ' + w + " " + ht + '" preserveAspectRatio="none" width="100%" height="' + ht + '">' +
+    '<path d="' + area + '" fill="' + (o.color || "#5b9dff") + '" opacity="0.18"></path>' +
+    '<path d="' + line + '" fill="none" stroke="' + (o.color || "#5b9dff") + '" stroke-width="1.6"></path></svg>';
+}
+function table(headers, rows, empty) {
+  if (!rows || !rows.length) return '<div class="empty">' + esc(empty || "Nothing yet") + "</div>";
+  return '<div class="scroll"><table><thead><tr>' +
+    headers.map(x => "<th" + (x.num ? ' class="num"' : "") + ">" + esc(x.label ?? x) + "</th>").join("") +
+    "</tr></thead><tbody>" + rows.join("") + "</tbody></table></div>";
+}
+function td(v, cls) { return '<td class="' + (cls || "") + '">' + (v ?? "—") + "</td>"; }
+function copy(obj, keys) { const out = {}; keys.forEach(k => { if (obj && obj[k] !== undefined) out[k] = obj[k]; }); return out; }
+
+// ---------------------------------------------------------------- navigation
+const VIEWS = [
+  ["overview", "Overview"], ["projects", "Projects"], ["models", "Models"],
+  ["live", "Live"], ["commits", "Commits"], ["budgets", "Budgets"],
+  ["jobs", "Jobs"], ["settings", "Settings"],
+];
+function renderNav() {
+  const nav = document.getElementById("nav");
+  nav.innerHTML = VIEWS.map(([id, label]) =>
+    '<button data-view="' + id + '" class="' + (state.view === id ? "active" : "") + '">' + label + "</button>").join("");
+  nav.querySelectorAll("button").forEach(b => b.onclick = () => go(b.dataset.view));
+  const range = document.getElementById("range");
+  const showRange = ["overview", "projects", "models", "commits"].includes(state.view);
+  range.innerHTML = showRange ? '<span>Last</span><select id="days">' +
+    [1, 7, 14, 30, 90, 180, 365, 0].map(d => '<option value="' + d + '"' + (state.days === d ? " selected" : "") + ">" +
+      (d === 0 ? "all time" : d + " days") + "</option>").join("") + "</select>" : "";
+  const sel = document.getElementById("days");
+  if (sel) sel.onchange = () => { state.days = Number(sel.value); render(); };
+}
+function route() {
+  const hash = location.hash.replace(/^#/, "") || "overview";
+  const [view, ...rest] = hash.split("/");
+  state.view = VIEWS.some(v => v[0] === view) ? view : "overview";
+  state.args = rest;
+  render();
+}
+function go(path) { location.hash = path; }
+window.addEventListener("hashchange", route);
+</script>
+
+<script>
+// ---------------------------------------------------------------- views
+const views = {};
+
+async function render() {
+  renderNav();
+  const app = document.getElementById("app");
+  const fn = views[state.view] || views.overview;
+  // Some panels (live, project) mount into their own slot and need "#p".
+  if (!app.querySelector("#p")) app.innerHTML = '<div class="grid" id="p"></div>';
+  try {
+    const node = await fn();
+    const host = app.querySelector("#p") || app;
+    host.replaceChildren(node);
+  } catch (err) {
+    app.replaceChildren(h('<div class="panel"><h2>Could not load</h2><p class="muted mono">' + esc(err.message) + "</p></div>"));
+  }
+}
+
+views.overview = async () => {
+  const [data, presence] = await Promise.all([api("/overview?days=" + state.days), api("/presence")]);
+  const [heat, projects] = await Promise.all([api("/heatmap?days=28"), api("/projects?days=" + state.days)]);
+  state.data.projects = projects.projects || [];
+  state.data.overview = data;
+  const t = data.totals || {};
+  const today = data.today || {};
+  const time = data.time || {};
+  const b = data.breakdowns || {};
+  const wrap = h('<div><h1>Overview</h1><div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  p.appendChild(h('<div class="kpis">' + kpi("Cost", usd(t.cost), usd(today.cost) + " today") +
+    kpi("Tokens", compact(t.tokens), compact(t.tokens_in) + " in / " + compact(t.tokens_out) + " out") +
+    kpi("Requests", num(t.requests), num(today.requests) + " today") +
+    kpi("Active time", dur(t.active_s), "human " + dur(time.human_s) + " · AI " + dur(time.ai_s)) +
+    kpi("Commits", num(t.commits), "credited AI cost included") +
+    kpi("Live sessions", String((presence.presence || []).length), "last 5 minutes") + "</div>"));
+  p.appendChild(h('<div class="grid cols-2">' +
+    '<div class="panel"><h2>Daily spend</h2>' + sparkline(data.daily, {key: "cost", color: "#a78bfa"}) + "</div>" +
+    '<div class="panel"><h2>Time split</h2>' + timeSplit(time) + "</div></div>"));
+  p.appendChild(h('<div class="grid cols-2">' +
+    '<div class="panel"><h2>Models</h2>' + table([{label: "Model"}, {label: "Requests", num: 1}, {label: "Tokens", num: 1}, {label: "Cost", num: 1}],
+      (data.models || []).map(m => '<tr class="click" data-model="' + esc(m.model || "") + '">' + td(esc(m.model || "(unknown)")) +
+        td(num(m.requests), "num") + td(compact(m.tokens), "num") + td(usd(m.cost), "num") + "</tr>")) + "</div>" +
+    '<div class="panel"><h2>Projects</h2>' + table(["Project", {label: "Cost", num: 1}, {label: "Active", num: 1}],
+      (state.data.projects || []).slice(0, 8).map(pr => '<tr class="click" data-project="' + esc(pr.key) + '">' + td(esc(pr.display_name)) +
+        td(usd(pr.cost), "num") + td(dur(pr.active_s), "num") + "</tr>"), "No projects yet") + "</div></div>"));
+  p.appendChild(h('<div class="grid cols-2"><div class="panel"><h2>Week heatmap</h2>' + heatGrid((heat || {}).cells || []) +
+    '</div><div class="panel"><h2>Last 365 days</h2>' + dayCalInner(data.calendar) + "</div></div>"));
+  p.querySelectorAll("[data-model]").forEach(el => el.onclick = () => go("model/" + encodeURIComponent(el.dataset.model)));
+  p.querySelectorAll("[data-project]").forEach(el => el.onclick = () => go("project/" + encodeURIComponent(el.dataset.project)));
+  return wrap;
+};
+
+function kpi(label, value, sub) {
+  return '<div class="kpi"><div class="l">' + esc(label) + '</div><div class="v">' + esc(value) + '</div><div class="s">' + esc(sub || "") + "</div></div>";
+}
+function timeSplit(time) {
+  const human = Number(time.human_s || 0), ai = Number(time.ai_s || 0), mixed = Number(time.mixed_s || 0);
+  const total = Math.max(human, ai, 1);
+  return '<div class="legend"><span><i style="background:var(--human)"></i>Human ' + dur(human) +
+    '</span><span><i style="background:var(--ai)"></i>AI ' + dur(ai) +
+    '</span><span><i style="background:var(--accent)"></i>Mixed ' + dur(mixed) + "</span></div>" +
+    '<div style="display:flex;height:14px;border-radius:999px;overflow:hidden;margin:8px 0;background:var(--panel2)">' +
+    '<i style="width:' + (human / total * 100).toFixed(1) + '%;background:var(--human)"></i>' +
+    '<i style="width:' + (ai / total * 100).toFixed(1) + '%;background:var(--ai)"></i></div>' +
+    '<div class="muted">Estimated by overlapping editor heartbeats and AI request intervals (15-minute idle cutoff).</div>';
+}
+function heatGrid(cells) {
+  const max = Math.max(1, ...cells.map(c => Number(c.active_s || 0)));
+  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  let html = '<div class="heat">';
+  for (let wd = 0; wd < 7; wd++) {
+    html += '<div class="lab">' + names[wd] + "</div>";
+    for (let hr = 0; hr < 24; hr++) {
+      const c = cells.find(x => x.weekday === wd && x.hour === hr) || {};
+      const v = Number(c.active_s || 0) / max;
+      const col = c.cost ? "rgba(167,139,250," + (0.25 + v * 0.75) + ")" : "rgba(52,211,153," + (0.12 + v * 0.88) + ")";
+      html += '<div class="cell" title="' + names[wd] + " " + hr + ":00 — active " + dur(c.active_s) +
+        ", AI " + dur(c.ai_s) + ", " + usd(c.cost) + ', style="background:' + (v ? col : "var(--panel2)") + '"></div>';
+    }
+  }
+  return html + "</div>";
+}
+function dayCalInner(cal) {
+  if (!cal) return '<div class="empty">loading…</div>';
+  return '<div class="cal">' + (cal.cells || []).map(c => {
+    const v = Math.min(1, Number(c.cost || 0) * 8 + Number(c.active_s || 0) / 3600);
+    return '<div class="cell" title="' + esc(c.date) + " — " + usd(c.cost) + ", " + dur(c.active_s) +
+      '" style="background:' + (v ? "rgba(52,211,153," + (0.15 + v * 0.85) + ")" : "var(--panel2)") + '"></div>';
+  }).join("") + "</div>";
+}
+</script>
+<script>
+// ---------------------------------------------------------------- projects
+views.projects = async () => {
+  const [data, stats] = await Promise.all([api("/projects?days=" + state.days), api("/stats?days=" + state.days)]);
+  state.data.projects = data.projects || [];
+  state.data.projectsStats = stats;
+  const rows = (data.projects || []).map(p => '<tr class="click" data-key="' + esc(p.key) + '">' +
+    td(esc(p.display_name) + (p.archived ? ' <span class="pill">archived</span>' : "") + '<div class="muted mono">' + esc(shortPath(p.root_path, true)) + "</div>") +
+    td(usd(p.cost), "num") + td(num(p.requests), "num") + td(compact(p.tokens), "num") +
+    td(dur(p.active_s), "num") + td(num(p.commits), "num") + td(when(p.last_activity), "muted") + "</tr>");
+  const wrap = h('<div><h1>Projects</h1>' +
+    '<div class="panel" style="margin-bottom:14px"><div class="row">' +
+    '<input id="pname" placeholder="Display name" size="18">' +
+    '<input id="proot" placeholder="Repository path (optional)" size="30">' +
+    '<button class="btn" id="padd">Add project</button>' +
+    '<button class="btn" id="pmerge">Merge…</button>' +
+    '<span class="right muted">Projects are matched by name, path, remote and aliases.</span></div></div>' +
+    '<div class="panel">' + table(["Project", {label: "Cost", num: 1}, {label: "Requests", num: 1},
+      {label: "Tokens", num: 1}, {label: "Active", num: 1}, {label: "Commits", num: 1}, "Last activity"], rows, "No projects yet") +
+    "</div></div>");
+  wrap.querySelectorAll("[data-key]").forEach(el => el.onclick = () => go("project/" + encodeURIComponent(el.dataset.key)));
+  wrap.querySelector("#padd").onclick = async () => {
+    const name = wrap.querySelector("#pname").value.trim();
+    if (!name) return toast("Enter a display name", true);
+    try {
+      await api("/projects", {method: "POST", body: JSON.stringify({key: name, display_name: name, root: wrap.querySelector("#proot").value.trim() || undefined})});
+      toast("Project added"); render();
+    } catch (e) { toast(e.message, true); }
+  };
+  wrap.querySelector("#pmerge").onclick = async () => {
+    const source = prompt("Merge which project (key or name)?");
+    if (!source) return;
+    const target = prompt("Into which project (key or name)?");
+    if (!target) return;
+    try { const r = await api("/projects/merge", {method: "POST", body: JSON.stringify({source, target})});
+      toast("Merged " + r.moved + " rows"); render(); } catch (e) { toast(e.message, true); }
+  };
+  return wrap;
+};
+
+views.project = async () => {
+  const key = decodeURIComponent(state.args[0] || "");
+  const days = state.days || 30;
+  const [data, presence] = await Promise.all([api("/project?key=" + encodeURIComponent(key) + "&days=" + days), api("/presence")]);
+  const p = data.project || {};
+  const t = data.totals || {};
+  const wrap = h('<div><div class="crumb"><a href="#projects">Projects</a> / ' + esc(p.display_name || key) + "</div>" +
+    '<div class="row" style="margin-bottom:14px"><h1 style="margin:0">' + esc(p.display_name || key) + "</h1>" +
+    '<span class="pill">' + esc(key) + "</span>" +
+    (p.repo_remote ? '<span class="pill">' + esc(p.repo_remote) + "</span>" : "") +
+    '<span class="right"></span><button class="btn small" id="rename">Rename</button></div>' +
+    '<div class="grid" id="p" style="margin-bottom:14px"></div></div>');
+  const grid = wrap.querySelector("#p");
+  grid.appendChild(h('<div class="kpis">' + kpi("Cost", usd(t.cost), "AI spend in range") +
+    kpi("Requests", num(t.requests), compact(t.tokens) + " tokens") +
+    kpi("Active time", dur(t.active_s), "editor heartbeats") +
+    kpi("Commits", num(t.commits), "last " + (days || "∞") + " days") + "</div>"));
+  const branches = (data.branches || []).map(b => '<tr class="click" data-branch="' + esc(b.branch) + '">' + td('<span class="mono">' + esc(b.branch) + "</span>") +
+    td(num(b.requests), "num") + td(compact(b.tokens), "num") + td(usd(b.cost), "num") + td(when(b.last_seen), "muted") + "</tr>");
+  grid.appendChild(h('<div class="grid cols-2">' +
+    '<div class="panel"><h2>Branches</h2>' + table(["Branch", {label: "Requests", num: 1}, {label: "Tokens", num: 1}, {label: "Cost", num: 1}, "Last seen"], branches) + "</div>" +
+    '<div class="panel"><h2>Uncommitted spend</h2>' + uncommittedTable(data.uncommitted) + "</div></div>"));
+  grid.appendChild(h('<div class="grid cols-3">' +
+    '<div class="panel"><h2>Models</h2>' + miniList(data.models, "model") + "</div>" +
+    '<div class="panel"><h2>Devices</h2>' + miniList(data.devices, "device") + "</div>" +
+    '<div class="panel"><h2>Tools</h2>' + miniList(data.tools, "tool") + "</div></div>"));
+  grid.appendChild(h('<div class="grid cols-2"><div class="panel"><h2>Week heatmap</h2>' +
+    heatGrid((data.heatmap || {}).cells || []) + "</div>" +
+    '<div class="panel"><h2>Top files</h2>' + table(["File", {label: "Touches", num: 1}, {label: "+", num: 1}, {label: "−", num: 1}],
+      (data.files || []).map(f => "<tr>" + td('<span class="mono">' + esc(shortPath(f.path, true)) + "</span>") +
+        td(num(f.touches), "num") + td(num(f.additions), "num") + td(num(f.deletions), "num") + "</tr>"), "No committed files") + "</div></div>"));
+  const commits = (data.commits || []).map(c => '<tr class="click" data-sha="' + esc(c.sha) + '">' +
+    td('<span class="mono">' + esc((c.sha || "").slice(0, 9)) + "</span>") + td(esc(c.subject || "").slice(0, 90)) +
+    td(esc(c.branch || "—")) + td(when(c.committed_at), "muted") +
+    td(usd((c.ai || {}).cost), "num") + td(num((c.ai || {}).requests), "num") +
+    td("+" + num(c.additions) + " / −" + num(c.deletions), "num") + "</tr>");
+  grid.appendChild(h('<div class="panel"><h2>Commits and credited AI work</h2>' +
+    table(["SHA", "Subject", "Branch", "When", {label: "AI cost", num: 1}, {label: "Requests", num: 1}, {label: "Churn", num: 1}], commits, "No commits observed yet") + "</div>"));
+  grid.appendChild(h('<div class="grid cols-2"><div class="panel"><h2>Sessions</h2>' +
+    table(["Session", {label: "Requests", num: 1}, {label: "Cost", num: 1}, "Model", "Last"], (data.sessions || []).map(s =>
+      "<tr>" + td('<span class="mono">' + esc((s.session_id || "").slice(0, 12)) + "</span>") +
+      td(num(s.requests), "num") + td(usd(s.cost), "num") + td(esc(s.model || "")) + td(when(s.last_seen), "muted") + "</tr>")) + "</div>" +
+    '<div class="panel"><h2>Budgets</h2>' + budgetList(data.budgets || [], key) + "</div></div>"));
+  wrap.querySelectorAll("[data-sha]").forEach(el => el.onclick = () =>
+    go("commit/" + encodeURIComponent(key) + "/" + encodeURIComponent(el.dataset.sha)));
+  wrap.querySelector("#rename").onclick = async () => {
+    const name = prompt("Display name", p.display_name || key);
+    if (!name) return;
+    try { await api("/project?key=" + encodeURIComponent(key), {method: "PATCH", body: JSON.stringify({display_name: name})});
+      toast("Renamed"); render(); } catch (e) { toast(e.message, true); }
+  };
+  return wrap;
+};
+
+function miniList(items, mode) {
+  if (!items || !items.length) return '<div class="empty">None</div>';
+  const max = Math.max(...items.map(i => Number(i.cost || 0)), 0.0001);
+  return items.slice(0, 10).map(i => '<div class="row" style="margin-bottom:6px">' +
+    '<span class="mono" style="flex:1">' + esc(i[mode] || i.name || "(unknown)") + "</span>" +
+    '<span class="num">' + usd(i.cost) + "</span></div>" + bar(Number(i.cost || 0) / max * 100)).join("");
+}
+function uncommittedTable(u) {
+  if (!u) return '<div class="empty">No commits observed</div>';
+  const rows = (u.branches || []).map(b => "<tr>" + td('<span class="mono">' + esc(b.branch || "(no branch)") + "</span>") +
+    td(when(b.since), "muted") + td(num(b.requests), "num") + td(compact(b.tokens), "num") + td(usd(b.cost), "num") + "</tr>");
+  return table(["Branch", "Since last commit", {label: "Requests", num: 1}, {label: "Tokens", num: 1}, {label: "Cost", num: 1}], rows) +
+    '<div class="muted" style="margin-top:8px">Spend on a branch after its latest observed commit is not yet credited to a commit.</div>';
+}
+function budgetList(budgets, projectKey) {
+  if (!budgets || !budgets.length) return '<div class="empty">No budgets for this project</div>';
+  return budgets.map(b => '<div class="card" style="margin-bottom:8px">' +
+    '<div class="row"><b>' + esc(b.metric) + " " + esc(b.period) + "</b>" +
+    '<span class="pill">' + (b.branch ? "branch " + esc(b.branch) : "project-wide") + "</span>" +
+    '<span class="right num">' + (b.metric === "cost" || b.metric === "cost_usd" ? usd(b.limit_value) : num(b.limit_value)) + "</span></div>" +
+    '<div class="muted">' + (b.hard_block ? "hard block at 100%" : "warn only") + ", warn at " + b.warn_pct + "%</div></div>").join("");
+}
+</script>
+<script>
+// ---------------------------------------------------------------- models (provider & per-model stats)
+views.models = async () => {
+  const params = "?days=" + state.days;
+  const [data, overview] = await Promise.all([api("/providers" + params), api("/overview?days=" + (state.days || 30))]);
+  const wrap = h('<div><h1>Models by provider</h1><div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  const providers = data.providers || [];
+  const allObserved = {};
+  providers.forEach(pv => (pv.models || []).forEach(m => { if (m.observed) allObserved[m.model] = m.observed; }));
+  p.appendChild(h('<div class="kpis">' + kpi("Total cost", usd(data.total_cost), (state.days ? "last " + state.days + " days" : "all time")) +
+    kpi("Providers", String(providers.length), "with recorded usage") +
+    kpi("Models", String(providers.reduce((n, pv) => n + (pv.models || []).length, 0)), "distinct models used") +
+    kpi("Requests", num(providers.reduce((n, pv) => n + pv.requests, 0)), "all providers") + "</div>"));
+
+  // Stacked cost history from the overview daily series + per-provider breakdown.
+  const daily = (overview.daily || []);
+  p.appendChild(h('<div class="grid cols-2">' +
+    '<div class="panel"><h2>Cost history</h2>' + sparkline(daily, {key: "cost", color: "#a78bfa"}) +
+    '<div class="legend" style="margin-top:6px"><span><i style="background:#a78bfa"></i>Total cost per day</span>' +
+    "<span>peak " + usd(Math.max(0, ...daily.map(d => d.cost || 0))) + "</span></div></div>" +
+    '<div class="panel"><h2>Requests history</h2>' + sparkline(daily, {key: "requests", color: "#5b9dff"}) +
+    '<div class="legend" style="margin-top:6px"><span><i style="background:#5b9dff"></i>Requests per day</span></div></div></div>'));
+
+  for (const pv of providers) {
+    const models = (pv.models || []).slice().sort((a, b) => b.cost - a.cost || b.requests - a.requests);
+    const rows = models.map(m => {
+      const o = m.observed || {};
+      return '<tr class="click" data-model="' + esc(m.model) + '">' +
+        td('<span class="mono">' + esc(m.model) + "</span>") +
+        td(num(m.requests), "num") + td(compact(m.tokens_in) + " / " + compact(m.tokens_out), "num") +
+        td(compact(m.tokens), "num") + td(usd(m.cost), "num") +
+        td(Number(m.share || 0).toFixed(1) + "%", "num") + td(bar(Number(m.share || 0), m.share > 25 ? "warn" : ""), "num") +
+        td(o.rt_latency_p50_ms != null ? Math.round(o.rt_latency_p50_ms) + " ms" : "—", "num") +
+        td(o.rt_success_rate != null ? o.rt_success_rate.toFixed(0) + "%" : "—", "num") +
+        td('<span class="pill">open</span>', "num") + "</tr>";
+    }).join("");
+    const section = h('<div class="panel"><div class="row" style="margin-bottom:8px">' +
+      '<h2 style="margin:0">' + esc(pv.provider) + "</h2>" +
+      '<span class="pill">' + (pv.models || []).length + " models</span>" +
+      '<span class="pill">' + num(pv.requests) + " requests</span>" +
+      '<span class="pill">' + compact(pv.tokens) + " tokens</span>" +
+      '<span class="right big">' + usd(pv.cost) + "</span></div>" +
+      table(["Model", {label: "Requests", num: 1}, {label: "In / out", num: 1},
+        {label: "Tokens", num: 1}, {label: "Cost", num: 1}, {label: "Share", num: 1}, {label: "", num: 1},
+        {label: "p50 latency", num: 1}, {label: "Success", num: 1}, {label: "", num: 1}], rows, "No usage in range") + "</div>");
+    section.querySelectorAll("[data-model]").forEach(el => el.onclick = () =>
+      go("model/" + encodeURIComponent(el.dataset.model)));
+    p.appendChild(section);
+  }
+  if (!providers.length) p.appendChild(h('<div class="panel empty">No LLM usage recorded yet.</div>'));
+  return wrap;
+};
+
+views.model = async () => {
+  const model = decodeURIComponent(state.args[0] || "");
+  const days = state.days === 30 ? 90 : state.days;
+  const data = await api("/model?model=" + encodeURIComponent(model) + "&days=" + days);
+  const t = data.totals || {};
+  const o = data.observed || {};
+  const wrap = h('<div><div class="crumb"><a href="#models">Models</a> / <span class="mono">' + esc(model) + "</span></div>" +
+    '<div class="row" style="margin-bottom:14px"><h1 style="margin:0" class="mono">' + esc(model) + "</h1>" +
+    '<span class="pill">' + (days ? "last " + days + " days" : "all time") + "</span></div>" +
+    '<div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  p.appendChild(h('<div class="kpis">' +
+    kpi("Total cost", usd(t.cost), "debit in this range") +
+    kpi("Requests", num(t.requests), "avg " + (t.requests ? compact(t.tokens / t.requests) : 0) + " tokens/request") +    kpi("Tokens in", compact(t.tokens_in), "prompt") +
+
+    kpi("Tokens out", compact(t.tokens_out), "completion") +
+    kpi("Latency p50 / p95", (t.latency_p50_ms != null ? Math.round(t.latency_p50_ms) : "—") + " / " + (t.latency_p95_ms != null ? Math.round(t.latency_p95_ms) : "—") + " ms",
+      "TTFT p50 " + (t.ttft_p50_ms != null ? Math.round(t.ttft_p50_ms) + " ms" : "—")) +
+    kpi("Success rate", (t.success_rate != null ? t.success_rate.toFixed(1) + "%" : "—"), "observed outcomes") + "</div>"));
+  p.appendChild(h('<div class="grid cols-2">' +
+    '<div class="panel"><h2>Cost over time</h2>' + sparkline(data.daily, {key: "cost", color: "#a78bfa"}) +
+    '<div class="legend" style="margin-top:6px"><span>peak ' + usd(Math.max(0, ...(data.daily || []).map(d => d.cost || 0))) + "</span>" +
+    "<span>total " + usd(t.cost) + "</span></div></div>" +
+    '<div class="panel"><h2>Requests & tokens over time</h2>' + sparkline(data.daily, {key: "tokens", color: "#5b9dff"}) +
+    '<div class="legend" style="margin-top:6px"><span><i style="background:#5b9dff"></i>Tokens per day</span>' +
+    "<span>requests " + num(t.requests) + "</span></div></div></div>"));
+  p.appendChild(h('<div class="panel"><h2>Cost history</h2>' + costHistory(data.daily || []) + "</div>"));
+  p.appendChild(h('<div class="grid cols-3">' +
+    groupPanel("Providers", data.providers) + groupPanel("Projects", data.projects) +
+    groupPanel("Jobs", data.jobs) + "</div>"));
+  p.appendChild(h('<div class="grid cols-3">' +
+    groupPanel("Devices", data.devices) + groupPanel("Tools", data.tools) + groupPanel("Kinds", data.kinds) + "</div>"));
+  p.appendChild(h('<div class="grid cols-2">' +
+    '<div class="panel"><h2>Observed routing metrics (24h)</h2>' + table(["Metric", {label: "Value", num: 1}], o && Object.keys(o).length ? [
+      "<tr>" + td("Requests") + td(num(o.rt_requests), "num") + "</tr>",
+      "<tr>" + td("p50 latency") + td(o.rt_latency_p50_ms != null ? Math.round(o.rt_latency_p50_ms) + " ms" : "—", "num") + "</tr>",
+      "<tr>" + td("p95 latency") + td(o.rt_latency_p95_ms != null ? Math.round(o.rt_latency_p95_ms) + " ms" : "—", "num") + "</tr>",
+      "<tr>" + td("TTFT p50") + td(o.rt_ttft_p50_ms != null ? Math.round(o.rt_ttft_p50_ms) + " ms" : "—", "num") + "</tr>",
+      "<tr>" + td("Success rate") + td((o.rt_success_rate || 0).toFixed(1) + "%", "num") + "</tr>",
+    ] : null, "No routing samples in the last 24h") + "</div>" +
+    '<div class="panel"><h2>Recent sessions</h2>' + table(["Session", {label: "Requests", num: 1}, {label: "Cost", num: 1}, "Last"],
+      (data.sessions || []).map(s => "<tr>" + td('<span class="mono">' + esc((s.session_id || "").slice(0, 14)) + "</span>") +
+        td(num(s.requests), "num") + td(usd(s.cost), "num") + td(when(s.last_seen), "muted") + "</tr>")) + "</div></div>"));
+  return wrap;
+};
+
+function groupPanel(title, items) {
+  const rows = (items || []).map(i => "<tr>" + td('<span class="mono">' + esc(i.name) + "</span>") +
+    td(num(i.requests), "num") + td(usd(i.cost), "num") + "</tr>");
+  return '<div class="panel"><h2>' + esc(title) + "</h2>" +
+    table(["Name", {label: "Requests", num: 1}, {label: "Cost", num: 1}], rows, "None") + "</div>";
+}
+
+function costHistory(daily) {
+  const rows = (daily || []).slice().reverse().map(d => "<tr>" + td(esc(d.date)) +
+    td(num(d.requests), "num") + td(compact(d.tokens_in) + " / " + compact(d.tokens_out), "num") +
+    td(usd(d.cost), "num") + td(bar(Math.min(100, (d.cost / Math.max(0.0001, Math.max(...daily.map(x => x.cost || 0)))) * 100), "warn"), "num") + "</tr>");
+  return table(["Day", {label: "Requests", num: 1}, {label: "Tokens in / out", num: 1}, {label: "Cost", num: 1}, {label: "", num: 1}], rows, "No usage in range") +
+    '<div class="muted" style="margin-top:8px">Rates change over time; each row is the actual recorded spend, not re-priced at current rates.</div>';
+}
+</script>
+<script>
+// ---------------------------------------------------------------- live
+views.live = async () => {
+  const [pres, stats, providers] = await Promise.all([api("/presence"), api("/stats?days=1"), api("/providers?days=1")]);
+  const modelsToday = (providers.providers || []).flatMap(x => x.models || []).sort((a, b) => b.cost - a.cost);
+  const wrap = h('<div><div class="row"><h1 style="margin:0">Live</h1><span class="pill good"><span class="live-dot"></span> auto-refresh 10s</span></div>' +
+    '<div class="muted" style="margin:8px 0 14px">Sessions from OpenCode, the git hook and the VS Code WakaTime extension.</div>' +
+    '<div id="live-body" class="grid"></div></div>');
+  const body = wrap.querySelector("#live-body");
+  body.id = "p";
+  const today = pres.today || {};
+  body.appendChild(h('<div class="kpis">' + kpi("Active sessions", String((pres.presence || []).length), "seen in last 5 min") +
+    kpi("Today cost", usd(today.cost), num(today.requests) + " requests") +
+    kpi("Today tokens", compact(today.tokens), "all models") +
+    kpi("Today active", dur(today.active_s), "editor heartbeats") + "</div>"));
+  const cards = (pres.presence || []).map(s => '<div class="card" style="margin-bottom:10px">' +
+    '<div class="row"><span class="live-dot"></span><b>' + esc(s.project_key || "(no project)") + "</b>" +
+    (s.branch ? '<span class="pill">' + esc(s.branch) + "</span>" : "") +
+    '<span class="right muted">' + when(s.last_seen) + "</span></div>" +
+    '<div class="grid cols-3" style="margin-top:8px">' +
+    "<div>" + meta("Session", (s.session_id || "").slice(0, 16)) + meta("Device", s.device) + meta("Tool", s.tool) + meta("Editor", s.editor) + "</div>" +
+    "<div>" + meta("Model", s.model) + meta("File", shortPath(s.file, true)) + meta("Status", s.status) + "</div>" +
+    "<div>" + (s.today ? meta("Today cost", usd(s.today.cost)) + meta("Today requests", num(s.today.requests)) + meta("Today tokens", compact(s.today.tokens)) : "") + "</div>" +
+    "</div></div>");
+  body.appendChild(h('<div class="panel"><h2>Active sessions</h2>' + (cards.join("") || '<div class="empty">No active sessions right now</div>') + "</div>"));
+  const p = wrap.querySelector("#p");
+  p.appendChild(h('<div class="panel"><h2>Models today</h2>' + miniList(modelsToday, "model") + "</div>"));
+  p.appendChild(projectBreakdown(stats));
+  clearTimeout(views.live._timer);
+  views.live._timer = setTimeout(() => { if (state.view === "live") render(); }, 10000);
+  return wrap;
+};
+function projectBreakdown(stats) {
+  const rows = (stats.projects || []).map(x => "<tr class=\"click\" data-project=\"" + esc(x.name) + "\">" +
+    td(esc(x.name)) + td(num(x.requests), "num") + td(usd(x.cost), "num") + "</tr>");
+  const el = h('<div class="grid cols-3"><div class="panel"><h2>Projects today</h2>' +
+    table(["Project", {label: "Requests", num: 1}, {label: "Cost", num: 1}], rows, "No usage today") + "</div>" +
+    '<div class="panel"><h2>Branches today</h2>' + miniList(stats.branches, "name") + "</div>" +
+    '<div class="panel"><h2>Jobs today</h2>' + miniList(stats.jobs, "name") + "</div></div>");
+  el.querySelectorAll("[data-project]").forEach(x => x.onclick = () => go("project/" + encodeURIComponent(x.dataset.project)));
+  return el;
+}
+function meta(label, value) {  return '<div class="row" style="gap:6px"><span class="muted" style="min-width:70px">' + esc(label) + "</span>" +
+    '<span class="mono">' + esc(value || "—") + "</span></div>";
+}
+
+// ---------------------------------------------------------------- commits
+views.commits = async () => {
+  const data = await api("/commits?days=" + state.days);
+  const rows = (data.commits || []).map(c => '<tr class="click" data-project="' + esc(c.project_key) + '" data-sha="' + esc(c.sha) + '">' +
+    td(when(c.committed_at), "muted") + td(esc(c.project_key)) + td('<span class="mono">' + esc((c.sha || "").slice(0, 9)) + "</span>") +
+    td(esc(c.subject || "").slice(0, 100)) + td(esc(c.branch || "—")) +
+    td(usd((c.ai || {}).cost), "num") + td(num((c.ai || {}).requests), "num") + "</tr>");
+  const wrap = h('<div><h1>Commits</h1><div class="panel">' +
+    table(["When", "Project", "SHA", "Subject", "Branch", {label: "AI cost", num: 1}, {label: "Requests", num: 1}], rows, "No commits observed yet") +
+    "</div></div>");
+  wrap.querySelectorAll("[data-sha]").forEach(el => el.onclick = () =>
+    go("commit/" + encodeURIComponent(el.dataset.project) + "/" + encodeURIComponent(el.dataset.sha)));
+  return wrap;
+};
+
+views.commit = async () => {
+  const key = decodeURIComponent(state.args[0] || "");
+  const sha = decodeURIComponent(state.args[1] || "");
+  const c = await api("/commit?key=" + encodeURIComponent(key) + "&sha=" + encodeURIComponent(sha));
+  const total = (c.usage || []).reduce((n, u) => n + Number(u.cost_usd || 0), 0);
+  const byKind = {};
+  (c.usage || []).forEach(u => { const k = u.kind || "primary"; byKind[k] = (byKind[k] || 0) + Number(u.cost_usd || 0); });
+  const wrap = h('<div><div class="crumb"><a href="#projects">Projects</a> / <a href="#project/' + encodeURIComponent(key) + '">' + esc(key) + "</a> / ~" + esc(sha.slice(0, 9)) + "</div>" +
+    '<div class="row" style="margin-bottom:6px"><h1 style="margin:0">' + esc(c.subject || "(no subject)") + "</h1></div>" +
+    '<div class="row muted mono" style="margin-bottom:14px">' + esc(c.sha) + " · " + esc(c.branch || "(detached)") + " · " + esc(c.author_name || "") + " · " + when(c.committed_at) + "</div>" +
+    '<div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  p.appendChild(h('<div class="kpis">' + kpi("Credited AI cost", usd(total), num((c.usage || []).length) + " requests") +
+    kpi("Churn", "+" + num(c.additions) + " / −" + num(c.deletions), num((c.files || []).length) + " files") +
+    kpi("Parents", (c.parents || []).length ? (c.parents || []).map(x => x.slice(0, 8)).join(", ") : "root commit", "git parents") +
+    kpi("Source", c.source, "hook / plugin / backfill") + "</div>"));
+  p.appendChild(h('<div class="panel"><div class="row"><h2>Credited requests</h2><button class="btn small right" id="recompute">Recompute attribution</button></div>' +
+    '<div class="legend" style="margin-bottom:8px">' + Object.entries(byKind).map(([k, v]) => "<span><b>" + esc(k) + "</b> " + usd(v) + "</span>").join(" ") + "</div>" +
+    table(["Time", "Model", "Kind", {label: "Tokens", num: 1}, {label: "Cost", num: 1}, {label: "Confidence", num: 1}, "Evidence"], (c.usage || []).map(u =>
+      "<tr>" + td(when(u.ts), "muted") + td('<span class="mono">' + esc(u.model || "") + "</span>") +
+      td(esc(u.kind || "primary")) + td(compact((u.tokens_in || 0) + (u.tokens_out || 0)), "num") +
+      td(usd(u.cost_usd), "num") + td(((u.confidence || 1) * 100).toFixed(0) + "%", "num") +
+      td('<span class="mono muted">' + esc(u.attribution || "") + "<br>" + esc(evidenceText(u.evidence)) + "</span>") + "</tr>"), "No AI requests credited") + "</div>"));
+  const files = (c.files || []).map(f => "<tr>" + td('<span class="mono">' + esc(shortPath(f.path, true)) + "</span>") +
+    td(esc(f.status || "")) + td("+" + num(f.additions), "num") + td("−" + num(f.deletions), "num") + "</tr>");
+  p.appendChild(h('<div class="grid cols-2"><div class="panel"><h2>Files</h2>' +
+    table(["Path", "Status", {label: "+", num: 1}, {label: "−", num: 1}], files, "No file list recorded") + "</div>" +
+    '<div class="panel"><h2>Commit message</h2><pre class="mono muted" style="white-space:pre-wrap">' + esc(c.body || c.subject || "") + "</pre></div></div>"));
+  wrap.querySelector("#recompute").onclick = async () => {
+    try { const r = await api("/commit/recompute?key=" + encodeURIComponent(key) + "&sha=" + encodeURIComponent(sha), {method: "POST"});
+      toast("Recomputed: " + r.attributed_events + " requests"); render(); } catch (e) { toast(e.message, true); }
+  };
+  return wrap;
+};
+function evidenceText(ev) {
+  if (!ev) return "";
+  const parts = [];
+  if (ev.snapshot_head) parts.push("snapshot " + String(ev.snapshot_head).slice(0, 8));
+  if (ev.tool) parts.push("tool " + ev.tool);
+  if (ev.tool_file_overlap) parts.push(ev.tool_file_overlap.length + " tool files");
+  if (ev.snapshot_file_overlap) parts.push(ev.snapshot_file_overlap.length + " snapshot files");
+  if (ev.branch_match) parts.push("branch match");
+  return parts.join(", ");
+}
+</script>
+<script>
+// ---------------------------------------------------------------- budgets
+views.budgets = async () => {
+  const [data, projects] = await Promise.all([api("/budgets"), api("/projects")]);
+  state.data.projects = projects.projects || [];
+  const checks = {};
+  await Promise.all([...new Set((data.budgets || []).map(b => b.project_key))].map(async (key) => {
+    try { checks[key] = await api("/budget/check?project_key=" + encodeURIComponent(key)); } catch (e) { checks[key] = {}; }
+  }));
+  const wrap = h('<div><h1>Budgets</h1><div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  p.appendChild(h('<div class="panel"><h2>Create or update a budget</h2><div class="row">' +
+    '<select id="bproject">' + state.data.projects.map(x => '<option value="' + esc(x.key) + '">' + esc(x.display_name) + "</option>").join("") + "</select>" +
+    '<input id="bbranch" placeholder="branch (optional)" size="18">' +
+    '<select id="bmetric"><option value="cost">USD cost</option><option value="tokens">tokens</option><option value="requests">requests</option></select>' +
+    '<select id="bperiod"><option value="daily">daily</option><option value="weekly">weekly</option><option value="monthly" selected>monthly</option><option value="total">total</option></select>' +
+    '<input id="blimit" placeholder="limit" type="number" step="0.01" style="width:110px">' +
+    '<input id="bwarn" placeholder="warn %" type="number" value="80" style="width:90px">' +
+    '<label class="muted"><input type="checkbox" id="bblock" checked> hard block</label>' +
+    '<button class="btn primary" id="bsave">Save</button></div>' +
+    '<div class="muted" style="margin-top:6px">Project budgets cover all branches; branch budgets only their branch. The router warns at the threshold and hard-blocks new requests at 100%.</div></div>'));
+  const rows = (data.budgets || []).map(b => {
+    const ev = checks[b.project_key] || {};
+    const item = (ev.budgets || []).find(x => x.id === b.id) || {};
+    const pct = item.pct != null ? item.pct : 0;
+    return "<tr>" + td(esc(b.project_key)) + td(esc(b.branch || "project-wide")) + td(esc(b.metric)) +
+      td(esc(b.period)) + td(b.metric === "cost" ? usd(b.limit_value) : num(b.limit_value), "num") +
+      td((item.used != null ? (b.metric === "cost" ? usd(item.used) : num(item.used)) : "—"), "num") +
+      td(pct.toFixed(1) + "% " + bar(pct, pct >= 100 ? "bad" : pct >= b.warn_pct ? "warn" : ""), "num") +
+      td(b.hard_block ? '<span class="pill warn">hard block</span>' : '<span class="pill">warn only</span>', "num") +
+      td('<button class="btn small" data-del="' + esc(b.id) + '">Delete</button>', "num") + "</tr>";
+  });
+  p.appendChild(h('<div class="panel"><h2>Budgets</h2>' + table(["Project", "Branch", "Metric", "Period", {label: "Limit", num: 1},
+    {label: "Used", num: 1}, {label: "Burn", num: 1}, {label: "Enforcement", num: 1}, {label: "", num: 1}], rows, "No budgets configured") + "</div>"));
+  wrap.querySelector("#bsave").onclick = async () => {
+    const body = {
+      project_key: wrap.querySelector("#bproject").value,
+      branch: wrap.querySelector("#bbranch").value.trim() || null,
+      metric: wrap.querySelector("#bmetric").value,
+      period: wrap.querySelector("#bperiod").value,
+      limit: Number(wrap.querySelector("#blimit").value),
+      warn_pct: Number(wrap.querySelector("#bwarn").value || 80),
+      hard_block: wrap.querySelector("#bblock").checked,
+    };
+    if (!body.project_key || !(body.limit > 0)) return toast("Pick a project and a positive limit", true);
+    try { await api("/budgets", {method: "POST", body: JSON.stringify(body)}); toast("Budget saved"); render(); }
+    catch (e) { toast(e.message, true); }
+  };
+  wrap.querySelectorAll("[data-del]").forEach(el => el.onclick = async () => {
+    try { await api("/budgets/" + encodeURIComponent(el.dataset.del), {method: "DELETE"}); toast("Deleted"); render(); }
+    catch (e) { toast(e.message, true); }
+  });
+  const rej = await api("/rejected?limit=50").catch(() => ({rejected: []}));
+  if ((rej.rejected || []).length) {
+    p.appendChild(h('<div class="panel"><h2>Rejected requests</h2>' + table(["When", "Session", "Project", "Missing fields"],
+      rej.rejected.map(r => "<tr>" + td(when(r.ts), "muted") + td('<span class="mono">' + esc((r.session_id || "").slice(0, 14)) + "</span>") +
+        td(esc(r.project_key || "—")) + td('<span class="mono">' + esc((r.missing || []).join(", ")) + "</span>") + "</tr>")) + "</div>"));
+  }
+  return wrap;
+};
+
+// ---------------------------------------------------------------- jobs
+views.jobs = async () => {
+  const [data, presets] = await Promise.all([api("/jobs"), api("/overview?days=1")]);
+  const names = (presets.breakdowns && presets.breakdowns.kinds) || [];
+  const wrap = h('<div><h1>Job profiles</h1><div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  const defaults = data.defaults || {};
+  const overrides = data.overrides || data.jobs || [];
+  const merged = data.jobs || [];
+  const list = Array.isArray(merged) ? merged : Object.entries(merged).map(([name, j]) => ({name, ...j}));
+  for (const j of list) if (!j.source) j.source = defaults[j.name] ? "yaml" : "db";
+  const rows = list.map(j => "<tr class=\"click\" data-job=\"" + esc(j.name) + "\">" + td('<span class="mono">' + esc(j.name) + "</span>") +
+    td(esc(j.base_preset)) + td('<span class="mono">' + esc(JSON.stringify(j.min_scores || {})) + "</span>") +
+    td(j.max_latency_p95_ms ? j.max_latency_p95_ms + " ms" : "—", "num") +
+    td(j.min_success_rate != null ? (j.min_success_rate * 100).toFixed(0) + "%" : "—", "num") +
+    td(esc(j.on_no_match || "error")) + td(j.enabled === false ? '<span class="pill">disabled</span>' : '<span class="pill good">enabled</span>') +
+    td(j.source === "yaml" ? '<span class="pill">default</span>' : '<span class="pill good">override</span>') + "</tr>");
+  p.appendChild(h('<div class="panel"><div class="row"><h2>Profiles</h2>' +
+    '<span class="right"></span><button class="btn small" id="jexport">Export</button>' +
+    '<button class="btn small" id="jimport">Import</button></div>' +
+    table(["Job", "Base preset", "Minimum scores", {label: "p95 limit", num: 1}, {label: "Success floor", num: 1}, "If no model fits", "State", "Source"], rows, "No job profiles") + "</div>"));
+  p.appendChild(h('<div class="panel"><h2 id="jtitle">Create or edit a job</h2>' +
+    '<div class="row"><input id="jname" placeholder="job name (x-oc-job)" size="22">' +
+    '<input id="jbase" placeholder="base preset" size="14" value="medium">' +
+    '<input id="jscores" placeholder=\'min scores JSON, e.g. {"aa_coding":60}\' size="34">' +
+    '<input id="jlat" placeholder="max p95 ms" type="number" style="width:120px">' +
+    '<input id="jsucc" placeholder="min success 0-1" type="number" step="0.01" style="width:130px">' +
+    '<select id="jnomatch"><option value="error">error</option><option value="fallback">fallback</option><option value="cheapest">cheapest</option></select>' +
+    '<button class="btn primary" id="jsave">Save</button></div>' +
+    '<div class="muted" style="margin:8px 0">Orchestrators select a job with the <span class="mono">x-oc-job</span> header or <span class="mono">x_oc.job</span> in the request body.</div>' +
+    '<div class="row"><textarea id="jpreview" placeholder="Prompt to preview routing"></textarea></div>' +
+    '<div class="row" style="margin-top:8px"><button class="btn" id="jtest">Preview routing</button></div>' +
+    '<div id="jresult" style="margin-top:10px"></div></div>'));
+  const fill = (j) => {
+    wrap.querySelector("#jname").value = j.name || "";
+    wrap.querySelector("#jbase").value = j.base_preset || "medium";
+    wrap.querySelector("#jscores").value = JSON.stringify(j.min_scores || {});
+    wrap.querySelector("#jlat").value = j.max_latency_p95_ms || "";
+    wrap.querySelector("#jsucc").value = j.min_success_rate ?? "";
+    wrap.querySelector("#jnomatch").value = j.on_no_match || "error";
+    wrap.querySelector("#jtitle").textContent = "Edit " + (j.name || "");
+  };
+  wrap.querySelectorAll("[data-job]").forEach(el => el.onclick = () => {
+    const j = list.find(x => x.name === el.dataset.job); if (j) fill(j);
+  });
+  wrap.querySelector("#jsave").onclick = async () => {
+    let scores = {};
+    try { scores = JSON.parse(wrap.querySelector("#jscores").value || "{}"); }
+    catch { return toast("Minimum scores must be JSON", true); }
+    const body = {
+      name: wrap.querySelector("#jname").value.trim(),
+      base_preset: wrap.querySelector("#jbase").value.trim() || "medium",
+      min_scores: scores,
+      max_latency_p95_ms: wrap.querySelector("#jlat").value ? Number(wrap.querySelector("#jlat").value) : null,
+      min_success_rate: wrap.querySelector("#jsucc").value ? Number(wrap.querySelector("#jsucc").value) : null,
+      on_no_match: wrap.querySelector("#jnomatch").value,
+    };
+    if (!body.name) return toast("Name the job", true);
+    try { await api("/jobs/" + encodeURIComponent(body.name), {method: "PUT", body: JSON.stringify(body)});
+      toast("Saved " + body.name); render(); } catch (e) { toast(e.message, true); }
+  };
+  wrap.querySelector("#jtest").onclick = async () => {
+    const prompt = wrap.querySelector("#jpreview").value;
+    try {
+      const r = await api("/jobs/preview", {method: "POST", body: JSON.stringify({
+        job: wrap.querySelector("#jname").value.trim() || null, prompt,
+        base_preset: wrap.querySelector("#jbase").value.trim() || "medium",
+        min_scores: JSON.parse(wrap.querySelector("#jscores").value || "{}"),
+      })});
+      const rows = (r.candidates || []).map(c => "<tr>" + td('<span class="mono">' + esc(c.model) + "</span>") +
+        td(num(c.score), "num") + td(usd(c.blended_cost), "num") + td(compact(c.context), "num") + "</tr>");
+      const rejected = (r.rejected || []).slice(0, 15).map(x => "<tr>" + td('<span class="mono">' + esc(x.model) + "</span>") +
+        td(esc(x.reason)) + "</tr>");
+      wrap.querySelector("#jresult").replaceChildren(h(
+        '<div class="panel tight"><div class="row"><b>Would route to:</b> <span class="mono">' + esc(r.would_route || "(none)") + "</span>" +
+        (r.ok ? "" : ' <span class="pill bad">no match</span>') + "</div></div>" +
+        '<div class="grid cols-2" style="margin-top:10px"><div>' + table(["Eligible model", {label: "Score", num: 1}, {label: "$/1M blended", num: 1}, {label: "Context", num: 1}], rows) + "</div>" +
+        '<div>' + table(["Rejected model", "Reason"], rejected) + "</div></div>"));
+    } catch (e) { toast(e.message, true); }
+  };
+  wrap.querySelector("#jexport").onclick = () => {
+    api("/jobs/export").then(r => {
+      const blob = new Blob([JSON.stringify(r, null, 2)], {type: "application/json"});
+      const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "jobs.json"; a.click();
+    }).catch(e => toast(e.message, true));
+  };
+  wrap.querySelector("#jimport").onclick = () => {
+    const text = prompt("Paste exported jobs JSON");
+    if (!text) return;
+  try { api("/jobs/import", {method: "POST", body: text}).then(() => { toast("Imported"); render(); })
+      .catch(e => toast(e.message, true)); } catch (e) { toast(e.message, true); }
+  };
+  return wrap;
+};
+
+// ---------------------------------------------------------------- settings / docs
+views.settings = async () => {
+  const [cfg, refresh, status] = await Promise.all([api("/config"), api("/refresh"), fetch("/v1/status").then(r => r.ok ? r.json() : null).catch(() => null)]);
+  const wrap = h('<div><h1>Settings and setup</h1><div class="grid" id="p"></div></div>');
+  const p = wrap.querySelector("#p");
+  const rows = Object.entries(cfg || {}).map(([k, v]) => "<tr>" + td(esc(k)) + td('<span class="mono">' + esc(String(v)) + "</span>") + "</tr>");
+  p.appendChild(h('<div class="grid cols-2"><div class="panel"><h2>Runtime</h2>' +
+    table(["Setting", "Value"], rows) + "</div>" +
+    '<div class="panel"><h2>Refresh</h2><div class="row"><button class="btn" id="dorefresh">Refresh models, costs & benchmarks</button></div>' +
+    table(["Source", "Status", "Started", "Counts"], (refresh.runs || []).map(r => "<tr>" + td(esc(r.source)) +
+      td(r.status === "ok" ? '<span class="pill good">ok</span>' : r.status === "error" ? '<span class="pill bad">error</span>' : '<span class="pill">' + esc(r.status) + "</span>") +
+      td(when(r.started_at), "muted") + td('<span class="mono">' + esc(JSON.stringify(r.counts || {})) + "</span>") + "</tr>"), "No refreshes yet") +
+    "</div></div>"));
+  p.appendChild(h('<div class="panel"><h2>Setup</h2><ol>' +
+    "<li><b>OpenCode</b>: install the router-tags plugin from <span class=\"mono\">integrations/opencode</span>; it sends git/device/tool/job headers and snapshots automatically.</li>" +
+    "<li><b>Git hook (optional)</b>: <span class=\"mono\">curl -fsSL …/integrations/git/install-hook.sh | sh</span> inside a repo; it prompts for a token and queues commits if the server is offline.</li>" +
+    "<li><b>VS Code</b>: install the official WakaTime extension, set API URL <span class=\"mono\">" + esc(cfg.public_url || location.origin) + "</span> and use your editor key as the API key.</li>" +
+    "</ol></div>"));
+  wrap.querySelector("#dorefresh").onclick = async () => {
+    try { await api("/refresh", {method: "POST"}); toast("Refresh started"); } catch (e) { toast(e.message, true); }
+  };
+  return wrap;
+};
+
+route();
+</script>
+</body>
+</html>

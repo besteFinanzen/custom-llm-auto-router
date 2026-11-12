@@ -7,14 +7,14 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import os  # noqa: E402
+import os
 
 os.environ.setdefault("ROUTER_TITLES_CMD", "")  # hermetic: no opencode subprocess in tests
 os.environ.setdefault("ROUTER_DATABASE_URL", "")  # opt in explicitly for PostgreSQL tests
 os.environ.setdefault("DATABASE_URL", "")  # never connect to the developer's default database
 
-from tests.stub import StubServer  # noqa: E402
-import gateway  # noqa: F401,E402  # construct the default app before per-test DSNs
+import gateway  # noqa: F401  # construct the default app before per-test DSNs
+from tests.stub import StubServer
 
 # one event loop for the whole session: the gateway's AsyncClient must stay on
 # a single loop, and ASGITransport only works inside a loop.
@@ -79,6 +79,7 @@ def write_catalog(tmp_path: pathlib.Path, stub_url: str, extra_state: dict | Non
 
 def build_client(tmp_path):
     import httpx
+
     from gateway import create_app
 
     app = create_app(tmp_path, tmp_path / "state")

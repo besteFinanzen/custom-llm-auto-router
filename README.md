@@ -160,6 +160,40 @@ metadata is sanitized to exclude prompts, responses and other content fields.
 See the integration guide for the plugin setup. Upgrade/recopy it to start
 project attribution for new events.
 
+### Work tracker
+
+**http://127.0.0.1:4141/worktracker** is the self-hosted work tracker: every
+commit is linked to the AI requests, tokens, USD cost, latency, model, session,
+device, tool and job that produced it (plus uncommitted spend and re-derivable
+attribution). It adds project/branch budgets with warnings and hard blocks,
+day/week heatmaps, live presence, model/provider statistics and UI-editable job
+profiles backed by the benchmark refresh.
+
+The same image runs three roles (`APP_MODE=all|router|tracker`); the router-only
+role forwards usage and budget checks to `TRACKER_REMOTE_URL`. Configure
+`TRACKER_DATABASE_URL` and the `TRACKER_ADMIN_TOKEN` / `TRACKER_EDITOR_KEY` /
+`TRACKER_HOOK_TOKEN` / `TRACKER_READ_TOKEN` scopes (see `.env.example`).
+
+```bash
+# storage is migrated automatically on start; the CLI also works in the image
+python -m worktracker migrate     # create/upgrade every tracker table
+python -m worktracker backfill    # project rows for pre-existing usage events
+python -m worktracker recompute   # re-derive commit -> AI attribution
+python -m worktracker status      # connectivity + row counts
+```
+
+Tracking is plugin-first (OpenCode plugin tags each request with session,
+project, device, tool and job identity); `sh integrations/git/install-hook.sh`
+adds an optional stdlib `post-commit` hook that never blocks a commit and queues
+reports during outages. VS Code uses the WakaTime-compatible API at
+`https://<host>/api/v1`.
+
+- Full reference: `docs/worktracker.md`
+- Dokploy single-app and split deployments: `deploy/DOKPLOY.md`
+- Live verification of a running deployment: `scripts/e2e_worktracker.py`
+  (usage, presence, snapshots, tool events, VS Code heartbeats, a real git
+  commit through the hook, attribution, budgets and every read surface).
+
 ## Live dashboard
 
 The gateway serves a self-contained live spending dashboard (no extra deps):

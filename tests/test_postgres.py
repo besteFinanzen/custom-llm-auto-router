@@ -10,8 +10,8 @@ import os
 
 import pytest
 
-from tracker import PostgresUsage
 from tests.conftest import build_client, run, write_catalog
+from tracker import PostgresUsage
 
 TODAY = dt.date.today().isoformat()
 YESTERDAY = (dt.date.today() - dt.timedelta(days=1)).isoformat()

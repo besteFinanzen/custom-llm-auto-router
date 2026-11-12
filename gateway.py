@@ -25,6 +25,7 @@ import pathlib
 import time
 import uuid
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any
 
 import httpx
@@ -33,14 +34,34 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 
 import balance as balance_mod
 from catalog import ROOT, Catalog, Model, load_dotenv
-from selector import Ranks, effective, preset_estimate, rank_candidates
+from discovery import load_discovered
+from selector import (
+    Ranks,
+    context_error,
+    context_requirement,
+    effective,
+    preset_estimate,
+    rank_for_request,
+)
 from sse import normalize_sse_stream
 from state import State
 from titles import TitleCache
-from discovery import load_discovered
 from tracker import PostgresUsage
+from worktracker import attribution
+from worktracker import jobs as job_profiles
+from worktracker.api import page as worktracker_page
+from worktracker.api import router as worktracker_router
+from worktracker.api import waka as worktracker_waka
+from worktracker.budgets import BudgetGate, RemoteBudgetClient
+from worktracker.budgets import payload as budget_payload
+from worktracker.config import Settings as WorktrackerSettings
+from worktracker.refresh_scheduler import start_scheduler
+from worktracker.store import TrackerStore
 
 FAILOVER_STATUSES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
+APP_MODE = (os.environ.get("APP_MODE") or "all").strip().lower()
+if APP_MODE not in {"all", "router", "tracker"}:
+    APP_MODE = "all"
 EST_CHARS_PER_TOKEN = 4
 DECISIONS_MAX_BYTES = 64 * 1024 * 1024
 MAX_REJECTED_LOGGED = 40
@@ -50,17 +71,23 @@ DASHBOARD_URL = f"http://{HOST}:{PORT}/dashboard"
 
 
 class UpstreamFail(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, latency_ms: int | None = None,
+                 ttft_ms: int | None = None):
         self.status = status
         self.detail = detail[:500]
+        self.latency_ms = latency_ms
+        self.ttft_ms = ttft_ms
 
 
 class Runtime:
     """Swappable app context so /v1/reload can hot-reload config and ranks."""
 
-    def __init__(self, config_dir: pathlib.Path, state_dir: pathlib.Path):
+    def __init__(self, config_dir: pathlib.Path, state_dir: pathlib.Path,
+                 mode: str = "all"):
         load_dotenv(config_dir / ".env")
         self.config_dir = config_dir
+        self.mode = mode
+        self.wt_settings = WorktrackerSettings.from_env()
         self.catalog = Catalog.load(config_dir / "catalog.yaml")
         self.state = State(state_dir)
         self.started_at = time.time()
@@ -71,8 +98,19 @@ class Runtime:
         self.discovered: dict[str, Model] = {}
         self.models: dict[str, Model] = {}
         self.tracker_error: str | None = None
-        # Standard for managed deployments; retain the original local alias.
-        database_url = (os.environ.get("DATABASE_URL") or
+        self.worktracker_error: str | None = None
+        self.worktracker: TrackerStore | None = None
+        self.budget: BudgetGate | RemoteBudgetClient | None = None
+        self.remote_url = (os.environ.get("TRACKER_REMOTE_URL") or "").rstrip("/")
+        self.remote_token = (self.wt_settings.hook_token
+                             or self.wt_settings.editor_key
+                             or self.wt_settings.admin_token)
+        self._metrics_at = 0.0
+        self._metrics: dict[str, dict] = {}
+        self.job_defaults = job_profiles.load_defaults(config_dir)
+        # Standard for managed deployments; retain the original local aliases.
+        database_url = (self.wt_settings.database_url or
+                        os.environ.get("DATABASE_URL") or
                         os.environ.get("ROUTER_DATABASE_URL") or "").strip()
         self.tracker: PostgresUsage | None = None
         if database_url:
@@ -86,6 +124,24 @@ class Runtime:
                 if self.tracker:
                     self.tracker.close()
                 self.tracker = None
+        # The tracker owns heartbeats, commits, budgets and the rich usage
+        # columns.  In router-only split mode it is intentionally remote so the
+        # router never writes a half-configured local analytics database.
+        if mode != "router" and self.wt_settings.database_url:
+            try:
+                self.worktracker = TrackerStore(self.wt_settings.database_url,
+                                               self.wt_settings)
+            except Exception as exc:
+                self.worktracker_error = f"{type(exc).__name__}: {exc}"
+                logging.getLogger("uvicorn.error").error(
+                    "Worktracker store unavailable: %s", self.worktracker_error)
+                self.worktracker = None
+        if self.worktracker:
+            self.budget = BudgetGate(self.worktracker, self.wt_settings)
+        elif self.remote_url:
+            self.budget = RemoteBudgetClient(
+                self.remote_url, self.remote_token,
+                fail_closed=self.wt_settings.budget_fail_closed)
         self._refresh_models()
 
     def _refresh_models(self) -> None:
@@ -107,7 +163,33 @@ class Runtime:
     def reload(self) -> None:
         self.catalog = Catalog.load(self.config_dir / "catalog.yaml")
         self.ranks.load()
+        self.job_defaults = job_profiles.load_defaults(self.config_dir)
+        self._metrics_at = 0.0
         self._refresh_models()
+
+    def job_profiles(self) -> dict[str, dict]:
+        overrides: list[dict] = []
+        if self.worktracker:
+            try:
+                overrides = self.worktracker.list_jobs()
+            except Exception as exc:
+                self.worktracker_error = f"{type(exc).__name__}: {exc}"
+        return job_profiles.merge(self.job_defaults, overrides)
+
+    def job_profile(self, name: str) -> dict | None:
+        return self.job_profiles().get(name)
+
+    def model_metrics(self) -> dict[str, dict]:
+        if not self.worktracker:
+            return {}
+        now = time.monotonic()
+        if now - self._metrics_at > 60:
+            try:
+                self._metrics = self.worktracker.observed_metrics(24 * 60)
+                self._metrics_at = now
+            except Exception as exc:
+                self.worktracker_error = f"{type(exc).__name__}: {exc}"
+        return self._metrics
 
     def log_decision(self, rec: dict) -> None:
         # 500 candidates x every failed request is what turned this log into
@@ -135,8 +217,6 @@ class Runtime:
             model.provider, tokens_in, tokens_out, cost_usd=cost_usd,
             preset=rec.get("preset") or "direct", model=model.id,
             session=rec.get("session"), kind=rec.get("kind"))
-        if not self.tracker:
-            return
         event = {
             "id": rec.get("request_id") or str(uuid.uuid4()),
             "ts": rec.get("ts"),
@@ -155,14 +235,68 @@ class Runtime:
             "estimated": estimated,
             "latency_ms": rec.get("latency_ms"),
             "stream": stream,
+            "branch": rec.get("branch"),
+            "session_directory": rec.get("session_directory"),
+            "device": rec.get("device"),
+            "tool": rec.get("tool"),
+            "tool_version": rec.get("tool_version"),
+            "job": rec.get("job"),
+            "agent": rec.get("agent"),
+            "git_head": rec.get("git_head"),
+            "repo_remote": rec.get("repo_remote"),
+            "ttft_ms": rec.get("ttft_ms"),
+            "outcome": rec.get("outcome") or "success",
+            "metadata": {
+                "attribution_warnings": rec.get("attribution_warnings") or [],
+                "budget_warnings": rec.get("budget_warnings") or [],
+                "escalated": bool(rec.get("escalated")),
+                "preset_requested": rec.get("preset_requested"),
+            },
         }
+        if self.worktracker:
+            try:
+                await asyncio.to_thread(self.worktracker.record_usage_event, event)
+                await asyncio.to_thread(
+                    self.worktracker.record_model_stat, model.provider, model.id, True,
+                    rec.get("latency_ms"), rec.get("ttft_ms"))
+                self.worktracker_error = None
+            except Exception as exc:
+                self.worktracker_error = f"{type(exc).__name__}: {exc}"
+                logging.getLogger("uvicorn.error").exception(
+                    "failed to persist worktracker usage event for %s", model.id)
+        elif self.remote_url:
+            try:
+                headers = ({"authorization": f"Bearer {self.remote_token}"}
+                           if self.remote_token else {})
+                await self.client.post(
+                    f"{self.remote_url}/worktracker/api/usage", json=event,
+                    headers=headers, timeout=5.0)
+            except Exception as exc:
+                self.worktracker_error = f"remote mirror: {type(exc).__name__}: {exc}"
+        if not self.tracker:
+            return
         try:
+            # New records were written above with the rich attribution columns;
+            # the legacy insert is a no-op for the same id and keeps old readers
+            # (history/spend) compatible when only DATABASE_URL is configured.
             await asyncio.to_thread(self.tracker.record_usage, event)
             self.tracker_error = None
         except Exception as exc:
             self.tracker_error = f"{type(exc).__name__}: {exc}"
             logging.getLogger("uvicorn.error").exception(
                 "failed to persist usage event for %s", model.id)
+
+    async def track_failure(self, model: Model, rec: dict, error: str) -> None:
+        """Record failed upstream attempts for latency/success routing metrics."""
+        rec["outcome"] = "error"
+        if not self.worktracker:
+            return
+        try:
+            await asyncio.to_thread(
+                self.worktracker.record_model_stat, model.provider, model.id, False,
+                rec.get("latency_ms"), rec.get("ttft_ms"), error[:500])
+        except Exception as exc:
+            self.worktracker_error = f"{type(exc).__name__}: {exc}"
 
 
 def err(status: int, msg: str, typ: str = "router_error") -> JSONResponse:
@@ -201,6 +335,43 @@ class DirectModel(Model):
     """Ad-hoc model for direct/<provider>/<upstream> requests (no routing)."""
 
 
+def _extra_headers(rec: dict) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    warnings = rec.get("budget_warnings") or []
+    if warnings:
+        text = ", ".join(
+            f"{item.get('metric')} {item.get('pct', 0):.0f}%"
+            for item in warnings[:4])
+        headers["x-worktracker-budget-warning"] = text[:500]
+    if rec.get("attribution_warnings"):
+        headers["x-worktracker-attribution-warning"] = (
+            f"{len(rec['attribution_warnings'])} missing field(s)")
+    return headers
+
+
+def _request_cost_estimate(rt: Runtime, body: dict) -> float:
+    """Worst-case dollars for this request against the priciest candidate.
+
+    Used as a budget reservation before routing, so concurrent requests cannot
+    all slip under a hard cap while the cache is warm.
+    """
+    ctx = context_requirement(rt.catalog.presets[_any_preset(rt)], rt.catalog.policy, body)
+    tin = int(ctx.get("prompt_tokens") or 0)
+    tout = int(ctx.get("output_reserve") or 0)
+    worst = 0.0
+    for model in rt.catalog.models.values():
+        cin, cout, _, _ = effective(model, rt.ranks)
+        worst = max(worst, tin / 1e6 * cin + tout / 1e6 * cout)
+    return round(worst, 6)
+
+
+def _any_preset(rt: Runtime) -> str:
+    for name in ("medium", *rt.catalog.presets):
+        if name in rt.catalog.presets:
+            return name
+    return next(iter(rt.catalog.presets))
+
+
 async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: dict) -> Response:
     prov = rt.catalog.providers[model.provider]
     t0 = time.time()
@@ -222,11 +393,6 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
             await resp.aclose()
             if resp.status_code in FAILOVER_STATUSES:
                 retry_after = resp.headers.get("retry-after")
-                try:
-                    cd = min(float(retry_after), float(rt.policy.get("cooldown_max_seconds", 900))) if retry_after \
-                        else float(rt.policy.get("cooldown_seconds", 60))
-                except ValueError:
-                    cd = float(rt.policy.get("cooldown_seconds", 60))
 
                 # ---- record consecutive failure (model counter + provider counter) ----
                 err_text = raw.decode("utf-8", "replace")
@@ -239,10 +405,14 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                 n = rt.state.get_model_failures(model.id).get("count", 1)
                 backoff_cd = min(base * (mult ** max(n - 1, 0)), cap)
                 if retry_after:
-                    backoff_cd = min(float(retry_after), cap)
+                    try:
+                        backoff_cd = min(float(retry_after), cap)
+                    except ValueError:  # non-numeric Retry-After (HTTP date) -> keep backoff
+                        backoff_cd = min(base * (mult ** max(n - 1, 0)), cap)
                 rt.state.set_backoff(model.id, backoff_cd, mult, prov.id)
                 await rt.state.set_cooldown(model.id, backoff_cd)
-            raise UpstreamFail(resp.status_code, raw.decode("utf-8", "replace"))
+            raise UpstreamFail(resp.status_code, raw.decode("utf-8", "replace"),
+                               latency_ms=int((time.time() - t0) * 1000))
     except UpstreamFail:
         raise
     except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -255,7 +425,8 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
         backoff_cd = min(base * (mult ** max(n - 1, 0)), cap)
         rt.state.set_backoff(model.id, backoff_cd, mult, prov.id)
         await rt.state.set_cooldown(model.id, backoff_cd)
-        raise UpstreamFail(0, f"transport error: {exc}")
+        raise UpstreamFail(0, f"transport error: {exc}",
+                           latency_ms=int((time.time() - t0) * 1000)) from exc
 
     cost_in, cost_out, _, _ = effective(model, rt.ranks)
 
@@ -266,6 +437,7 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
     if stream:
         async def gen():
             n = 0
+            ttft_ms: int | None = None
             try:
                 # Decode upstream content-encoding (gzip/deflate/br) so the
                 # downstream sees plain SSE. Some upstreams (DeepSeek) gzip
@@ -273,8 +445,10 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                 # header makes clients fail with "stream ended without
                 # finish_reason".
                 async def upstream_bytes():
-                    nonlocal n
+                    nonlocal n, ttft_ms
                     async for chunk in resp.aiter_bytes():
+                        if ttft_ms is None:
+                            ttft_ms = int((time.time() - t0) * 1000)
                         n += len(chunk)
                         yield chunk
 
@@ -287,15 +461,18 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                 await resp.aclose()
                 tout = max(n // (EST_CHARS_PER_TOKEN * 2), 1)
                 cost = cost_of(est_in, tout)
-                rec.update(chosen=model.id, latency_ms=int((time.time() - t0) * 1000), stream=True,
+                rec.update(chosen=model.id, latency_ms=int((time.time() - t0) * 1000),
+                           ttft_ms=ttft_ms, stream=True,
                            usage={"in": est_in, "out": tout, "estimated": True},
-                           cost_usd=cost, price={"in": cost_in, "out": cost_out})
+                           cost_usd=cost, price={"in": cost_in, "out": cost_out},
+                           outcome="success")
                 await rt.track_usage(model, est_in, tout, cost, rec,
                                      estimated=True, stream=True)
                 rt.log_decision(rec)
                 await rt.state.record_success(model.id, model.provider)
         return StreamingResponse(gen(), media_type=resp.headers.get("content-type", "text/event-stream"),
-                                 headers={"x-router-model": model.id})
+                                 headers={"x-router-model": model.id,
+                                          **_extra_headers(rec)})
 
     try:
         data = await resp.aread()
@@ -309,9 +486,10 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
     tin = int(usage.get("prompt_tokens") or est_in)
     tout = int(usage.get("completion_tokens") or len(data) // (EST_CHARS_PER_TOKEN * 2))
     cost = cost_of(tin, tout)
-    rec.update(chosen=model.id, latency_ms=int((time.time() - t0) * 1000), stream=False,
+    latency_ms = int((time.time() - t0) * 1000)
+    rec.update(chosen=model.id, latency_ms=latency_ms, ttft_ms=latency_ms, stream=False,
                usage={"in": usage.get("prompt_tokens"), "out": usage.get("completion_tokens")},
-               cost_usd=cost, price={"in": cost_in, "out": cost_out})
+               cost_usd=cost, price={"in": cost_in, "out": cost_out}, outcome="success")
     await rt.track_usage(model, tin, tout, cost, rec,
                          estimated=not bool(usage.get("prompt_tokens")),
                          stream=False)
@@ -320,7 +498,8 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
     return Response(content=data, status_code=200,
                     media_type=resp.headers.get("content-type", "application/json"),
                     headers={"x-router-model": model.id,
-                             "x-router-cost-usd": f"{cost:.6f}"})
+                             "x-router-cost-usd": f"{cost:.6f}",
+                             **_extra_headers(rec)})
 
 
 def _recent_decisions(rt: Runtime, limit: int = 40) -> list[dict]:
@@ -351,34 +530,124 @@ def create_app(config_dir: pathlib.Path | None = None,
                state_dir: pathlib.Path | None = None) -> FastAPI:
     config_dir = pathlib.Path(config_dir or os.environ.get("ROUTER_CONFIG_DIR") or ROOT)
     state_dir = pathlib.Path(state_dir or os.environ.get("ROUTER_STATE_DIR") or config_dir / "state")
-    rt = Runtime(config_dir, state_dir)
+    mode = (os.environ.get("APP_MODE") or APP_MODE or "all").strip().lower()
+    if mode not in {"all", "router", "tracker"}:
+        mode = "all"
+    if mode == "tracker":
+        # Split deployment: this process is the tracker only, no model proxy.
+        from worktracker.app import create_tracker_app
+        return create_tracker_app(config_dir=config_dir, state_dir=state_dir)
+    rt = Runtime(config_dir, state_dir, mode)
+    scheduler_task: asyncio.Task | None = None
+
     @asynccontextmanager
-    async def lifespan(_app: FastAPI):
+    async def lifespan(app: FastAPI):
+        nonlocal scheduler_task
         logging.getLogger("uvicorn.error").info("llm-auto-router: dashboard at %s", DASHBOARD_URL)
+        if mode == "all":
+            scheduler_task = start_scheduler(app)
         yield
+        if scheduler_task:
+            scheduler_task.cancel()
+        if rt.worktracker:
+            rt.worktracker.close()
         if rt.tracker:
             rt.tracker.close()
+        await rt.client.aclose()
 
     app = FastAPI(title="llm-auto-router", lifespan=lifespan)
+    app.state.wt_settings = rt.wt_settings
+    app.state.wt_store = rt.worktracker
+    app.state.wt_budget_gate = rt.budget if isinstance(rt.budget, BudgetGate) else None
+    app.state.wt_config_dir = config_dir
+    app.state.wt_state_dir = state_dir
+    app.state.wt_runtime = rt
+    app.state.wt_app_mode = mode
+    if mode == "all":
+        app.include_router(worktracker_page)
+        app.include_router(worktracker_router, prefix="/worktracker/api")
+        app.include_router(worktracker_waka, prefix="/api/v1")
 
     @app.post("/v1/chat/completions")
     async def chat(request: Request):
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            return err(400, "request body must be valid JSON", "bad_request")
+        if not isinstance(body, dict):
+            return err(400, "request body must be a JSON object", "bad_request")
         requested = str(body.get("model") or "")
-        kind = request.headers.get("x-oc-kind", "primary")
-        session = (request.headers.get("x-oc-session") or "")[:128] or None
-        project_id = (request.headers.get("x-oc-project") or "")[:256] or None
-        project_root = (request.headers.get("x-oc-project-root") or "")[:1024] or None
-        worktree = (request.headers.get("x-oc-worktree") or "")[:1024] or None
-        directory = (request.headers.get("x-oc-directory") or "")[:1024] or None
+        meta = attribution.extract(request.headers, body)
+        problems = (attribution.missing(meta)
+                    if rt.wt_settings.attribution_mode != "off" else [])
+        kind = meta.get("kind") or "primary"
+        session = (meta.get("session") or "")[:128] or None
+        project_id = (meta.get("project") or "")[:256] or None
+        project_root = (meta.get("project_root") or "")[:1024] or None
+        worktree = ((request.headers.get("x-oc-worktree") or
+                     meta.get("session_directory") or
+                     request.headers.get("x-oc-directory") or "")[:1024] or None)
         rec: dict[str, Any] = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                                "request_id": str(uuid.uuid4()),
                                "kind": kind, "session": session,
                                "project_id": project_id, "project_root": project_root,
-                               "worktree": worktree or directory,
+                               "worktree": worktree,
                                "requested": requested, "tried": [], "rejected": []}
+        attribution.apply(rec, meta)
+        rec.update(kind=kind, session=session, project_id=project_id,
+                   project_root=project_root, worktree=worktree)
+        if problems:
+            rec["attribution_warnings"] = problems
+            if rt.worktracker:
+                try:
+                    await asyncio.to_thread(rt.worktracker.record_rejected, {
+                        "session": session, "project_key": project_id,
+                        "missing": problems, "path": "/v1/chat/completions",
+                        "user_agent": (request.headers.get("user-agent") or "")[:500],
+                    })
+                except Exception:
+                    pass
+            if rt.wt_settings.attribution_mode == "enforce":
+                rec["error"] = "missing attribution"
+                rt.log_decision(rec)
+                return JSONResponse(
+                    status_code=400,
+                    content=attribution.error_payload(problems, path="/v1/chat/completions"))
         stream = bool(body.get("stream"))
         max_age = float(rt.policy.get("balance_cache_seconds", 3600))
+
+        if rt.budget and (project_id or rt.wt_settings.attribution_mode != "off"):
+            # Without a project there is nothing to cap, but the check still
+            # runs so account-wide/fail-closed behaviour is identical for
+            # un-attributed clients.
+            reserve = _request_cost_estimate(rt, body) if project_id else 0.0
+            budget = await asyncio.to_thread(
+                partial(rt.budget.check, project_id or "", meta.get("branch"),
+                        True, reserve))
+            rec["budget"] = budget
+            if budget.get("warnings"):
+                rec["budget_warnings"] = budget["warnings"]
+            if budget.get("blocked"):
+                rec["error"] = "budget exceeded"
+                rt.log_decision(rec)
+                return JSONResponse(
+                    status_code=429, content=budget_payload(budget),
+                    headers={"retry-after": "60",
+                             "x-worktracker-budget": "exceeded"})
+
+        job_name = job_profiles.requested_job(request.headers, body)
+        job: dict | None = None
+        if job_name:
+            profile = await asyncio.to_thread(rt.job_profile, job_name)
+            if not profile:
+                available = sorted((await asyncio.to_thread(rt.job_profiles)).keys())
+                return err(400, f"unknown job profile '{job_name}'. available: "
+                                f"{', '.join(available) or '(none)'}; create it in "
+                                "Worktracker > Jobs or jobs.yaml", "unknown_job")
+            if not profile.get("enabled", True):
+                return err(403, f"job profile '{job_name}' is disabled", "job_disabled")
+            job = profile
+            rec["job"] = job_name
 
         if requested.startswith("direct/"):
             try:
@@ -397,17 +666,70 @@ def create_app(config_dir: pathlib.Path | None = None,
             if name not in rt.catalog.presets:
                 return err(404, f"unknown model '{requested}'. use a preset "
                                 f"({', '.join(rt.catalog.presets)}) or direct/<provider>/<upstream>")
-            preset_eff = rt.policy.get("aux_preset", "low") if kind in rt.policy.get("aux_kinds", []) else name
-            rec.update(preset_requested=name, preset=preset_eff)
+            rec["preset_requested"] = name
+            if kind in rt.policy.get("aux_kinds", []):
+                # Title/compaction/generate are mechanical; they must not
+                # inherit an expensive job preset just because a session
+                # carries x-oc-job.
+                preset_eff = rt.policy.get("aux_preset", "low")
+            elif job:
+                preset_eff = job.get("base_preset") or "medium"
+            else:
+                preset_eff = name
+            if preset_eff not in rt.catalog.presets:
+                return err(400, f"unknown base preset '{preset_eff}' for job profile "
+                                f"'{job_name}'", "bad_job_preset")
+            rec["preset"] = preset_eff
             for prov in rt.catalog.providers.values():
                 if prov.enabled and prov.balance.get("type") in ("openrouter", "deepseek"):
                     await balance_mod.refresh_balance(prov, rt.state, rt.client, max_age)
-            candidates, rec["rejected"] = rank_candidates(rt.catalog, preset_eff, rt.ranks,
-                                                          rt.state, rt.models)
+            metrics = await asyncio.to_thread(rt.model_metrics)
+            ranked = rank_for_request(rt.catalog, preset_eff, rt.ranks, rt.state,
+                                      rt.models, body, job=job, metrics=metrics)
+            candidates = ranked["candidates"]
+            rec["rejected"] = ranked["rejected"]
+            rec["context"] = ranked["context"]
+            if ranked.get("escalated"):
+                rec["preset"] = ranked["preset"]
+                rec["escalated"] = True
+                rec["requested_preset"] = preset_eff
+            if not candidates and job and job.get("on_no_match") in {"fallback", "cheapest"}:
+                relaxed = rank_for_request(rt.catalog, preset_eff, rt.ranks, rt.state,
+                                           rt.models, body, metrics=metrics)
+                candidates = relaxed["candidates"]
+                rec["rejected"] = relaxed["rejected"]
+                rec["context"] = relaxed["context"]
+                rec["job_fallback"] = job.get("on_no_match")
+                if candidates and job.get("on_no_match") == "cheapest":
+                    # Cheapest for *this request*, not the per-1M headline.
+                    ctx = relaxed["context"] or {}
+                    tin = int(ctx.get("prompt_tokens") or 0)
+                    tout = int(ctx.get("output_reserve") or 0)
+
+                    def req_cost(m: Model) -> float:
+                        cin, cout, _, _ = effective(m, rt.ranks)
+                        return tin / 1e6 * cin + tout / 1e6 * cout
+
+                    candidates = sorted(candidates, key=req_cost)
+                if candidates:
+                    rec["preset"] = relaxed["preset"]
+                    if relaxed.get("escalated"):
+                        rec["escalated"] = True
+                        rec["requested_preset"] = preset_eff
 
         if not candidates:
-            rec.update(error="no candidates")
+            rec["error"] = "no candidates"
             rt.log_decision(rec)
+            if rec.get("rejected") and any("context too small" in str(item.get("reason"))
+                                           for item in rec["rejected"]):
+                return JSONResponse(
+                    status_code=400,
+                    content=context_error(rt.catalog, rt.ranks, rec.get("preset") or "medium",
+                                          rec.get("context") or {}, rt.models))
+            if job and job.get("on_no_match") == "error":
+                return err(422, f"no model satisfies job profile '{job_name}'; "
+                                f"rejections: {json.dumps(rec['rejected'][:5])}",
+                           "job_no_match")
             return err(503, "no eligible model (all disabled/cooling/over-budget); see "
                             "/v1/status and state/decisions.jsonl", "no_candidates")
 
@@ -438,6 +760,13 @@ def create_app(config_dir: pathlib.Path | None = None,
                 return await proxy_call(rt, m, b2, stream, rec)
             except UpstreamFail as f:
                 rec["tried"].append({"id": m.id, "status": f.status, "error": f.detail[:200]})
+                # Timing must reach track_failure so p95 latency and success
+                # rates include failed attempts instead of only winners.
+                if f.latency_ms is not None:
+                    rec["latency_ms"] = f.latency_ms
+                if f.ttft_ms is not None:
+                    rec["ttft_ms"] = f.ttft_ms
+                await rt.track_failure(m, rec, f.detail)
         rec.update(error="all candidates failed")
         rt.log_decision(rec)
         if tried == 0:  # candidates existed but every one failed the balance check
@@ -483,6 +812,15 @@ def create_app(config_dir: pathlib.Path | None = None,
             "tracking": (rt.tracker.status() if rt.tracker else
                          {"enabled": False, "error": rt.tracker_error or
                           "set DATABASE_URL to enable PostgreSQL history"}),
+            "worktracker": (
+                {**rt.worktracker.status(),
+                 "refresh": rt.worktracker.refresh_status(),
+                 "jobs": [job.get("name") for job in rt.worktracker.list_jobs()],
+                 "attribution_mode": rt.wt_settings.attribution_mode}
+                if rt.worktracker else
+                {"enabled": False, "error": rt.worktracker_error or
+                 "set TRACKER_DATABASE_URL/DATABASE_URL to enable the work tracker"}),
+            "benchmarks": {"fetched_at": rt.ranks.data.get("benchmarks_fetched_at")},
             "ranks": {"fetched_at": rt.ranks.data.get("fetched_at"),
                       "unmatched": rt.ranks.data.get("unmatched", []),
                       "review": rt.ranks.data.get("review", [])},
@@ -633,7 +971,14 @@ def create_app(config_dir: pathlib.Path | None = None,
 
     @app.get("/healthz")
     async def healthz():
-        return {"ok": True}
+        database = True
+        if rt.worktracker:
+            try:
+                rt.worktracker.status()
+            except Exception:
+                database = False
+        return {"ok": True, "mode": mode, "database": database,
+                "worktracker": bool(rt.worktracker)}
 
     return app
 

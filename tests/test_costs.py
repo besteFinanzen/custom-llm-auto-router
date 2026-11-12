@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime
 import json
 
-from tests.conftest import CATALOG, build_client, run, write_catalog
+from tests.conftest import CATALOG, build_client, run
 from tests.test_gateway import BODY, stream
 
 
