@@ -12,12 +12,16 @@
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,14,20,.92);backdrop-filter:blur(6px);z-index:5}
+  a{color:var(--cyan);text-decoration:none}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,14,20,.92);backdrop-filter:blur(6px);z-index:5;gap:14px;flex-wrap:wrap}
   .brand{display:flex;align-items:center;gap:10px;font-weight:600}
   .brand .sub{color:var(--muted);font-weight:400}
   .dot{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 8px var(--red);transition:.3s}
   .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
-  .right{display:flex;align-items:center;gap:12px}
+  .right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  nav{display:flex;gap:6px}
+  nav a{padding:5px 10px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
+  nav a.active,nav a:hover{color:var(--fg);border-color:#334155;background:var(--panel)}
   .muted{color:var(--muted)}
   button{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit}
   button:hover{border-color:#334155}
@@ -86,6 +90,7 @@
 <header>
   <div class="brand"><span class="dot" id="dot"></span> llm-auto-router <span class="sub">· live spend &amp; sessions</span></div>
   <div class="right">
+    <nav aria-label="Dashboard"><a class="active" href="/dashboard" aria-current="page">live</a><a href="/dashboard/history">history &amp; projects</a></nav>
     <span class="muted" id="updated">connecting…</span>
     <button id="pause">pause</button>
   </div>
@@ -96,6 +101,13 @@
     <div class="stat"><label>requests today</label><b id="today-reqs">—</b><span class="muted" id="reqs-meta">&nbsp;</span></div>
     <div class="stat"><label>tokens today</label><b id="today-tokens">—</b><span class="muted" id="tok-meta">&nbsp;</span></div>
     <div class="stat"><label>models</label><b id="models-count">—</b><span class="muted" id="models-meta">&nbsp;</span></div>
+  </section>
+
+  <section class="hero">
+    <div class="stat"><label>spend · all time</label><b id="all-cost">—</b><span class="muted" id="all-meta">&nbsp;</span></div>
+    <div class="stat"><label>requests · all time</label><b id="all-reqs">—</b><span class="muted" id="all-reqs-meta">&nbsp;</span></div>
+    <div class="stat"><label>tokens · all time</label><b id="all-tokens">—</b><span class="muted" id="all-tokens-meta">&nbsp;</span></div>
+    <div class="stat"><label>history &amp; projects</label><b><a href="/dashboard/history" style="color:var(--cyan)">explore →</a></b><span class="muted">ranges · projects · human/AI</span></div>
   </section>
 
   <section class="cards" id="providers"></section>
@@ -162,7 +174,12 @@ const tok = n => { n = +n || 0;
   return n >= 1e6 ? (n/1e6).toFixed(2) + 'M' : n >= 1e3 ? (n/1e3).toFixed(1) + 'k' : String(n);
 };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const clock = ts => new Date(ts * 1000).toLocaleTimeString([], {hour12:false});
+const clock = ts => {
+  if (ts == null || ts === '') return '—';
+  const numeric = typeof ts === 'number' || (typeof ts === 'string' && /^\d+(\.\d+)?$/.test(ts.trim()));
+  const date = new Date(numeric ? Number(ts) * 1000 : ts);
+  return isNaN(date.getTime()) ? '—' : date.toLocaleTimeString([], {hour12:false});
+};
 const shortSession = s => (!s || s === '(unknown)') ? '(unknown)' : (s.length > 14 ? s.slice(0, 14) + '…' : s);
 let sessionFilter = null;
 let lastData = null;
@@ -192,7 +209,7 @@ function renderProviders(d) {
         <span class="pill ${p.enabled ? 'ok' : 'off'}">${p.enabled ? 'on' : 'off'}</span></div>
       <div class="cost ${t.cost > 0 ? 'warn' : 'ok'}">${money(t.cost)}</div>
       <div class="row"><span>${t.reqs || 0} reqs · ${tok((t.in || 0) + (t.out || 0))} tok</span><span>${esc(balTxt)}</span></div>
-      <div class="row"><span class="muted">lifetime ${money(total.cost)}</span><span class="muted">${total.reqs || 0} reqs</span></div>
+      <div class="row"><span class="muted">lifetime ${money(total.cost)} · ${total.reqs || 0} reqs</span><span class="muted">${tok((total.in || 0) + (total.out || 0))} tok</span></div>
     </div>`;
   }).join('');
 }
@@ -413,6 +430,13 @@ function render(d) {
   $('#reqs-meta').textContent = (d.uptime_s != null ? 'up ' + Math.floor(d.uptime_s / 60) + 'm' : '');
   $('#today-tokens').textContent = tok((t.in || 0) + (t.out || 0));
   $('#tok-meta').textContent = tok(t.in || 0) + ' in · ' + tok(t.out || 0) + ' out';
+  const all = d.all_time || {};
+  $('#all-cost').textContent = money(all.cost);
+  $('#all-meta').textContent = d.tracking && d.tracking.since ? 'PostgreSQL · since ' + d.tracking.since : 'lifetime JSON totals';
+  $('#all-reqs').textContent = String(all.reqs || 0);
+  $('#all-reqs-meta').textContent = d.tracking && d.tracking.enabled ? 'durable usage events' : 'database not configured';
+  $('#all-tokens').textContent = tok((all.in || 0) + (all.out || 0));
+  $('#all-tokens-meta').textContent = tok(all.in || 0) + ' in · ' + tok(all.out || 0) + ' out';
   const disc = d.discovery || {};
   $('#models-count').textContent = disc.models != null ? disc.models : '—';
   $('#models-meta').textContent = disc.fetched_at ? 'discovery ' + String(disc.fetched_at).slice(0, 16).replace('T', ' ') : 'no discovery yet';

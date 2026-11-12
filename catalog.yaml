@@ -43,11 +43,12 @@ providers:
       daily_tokens: 50000000     # seed cap (input+output), tune to your quota
 
   opencode:
-    enabled: false                  # 403 "can't call models" outside the OpenCode client; remove to retry
+    enabled: true
     base_url: https://opencode.ai/inference/openai/v1
     models_url: https://opencode.ai/inference/v1/models   # list endpoint differs from chat base
     api_key_env: OPENCODE_API_KEY   # required even for free models (else 403)
-    discovery: {default_cost_in: 0, default_cost_out: 0, default_context: 131072}
+    # Unknown prices must never route through a free/cheap preset.
+    discovery: {default_cost_in: 999, default_cost_out: 999, default_context: 131072}
     balance:
       type: rate_only
       daily_requests: 200          # seed cap; free-tier quotas are undisclosed
@@ -66,6 +67,11 @@ providers:
     balance:
       type: deepseek               # GET /user/balance
       min_balance: 0.10            # stop routing below this remaining balance
+
+  google:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GEMINI_API_KEY
+    discovery: {default_cost_in: 999, default_cost_out: 999, default_context: 1048576}
 
 # presets: virtual models exposed to OpenCode. max_cost is a blended $/1M
 # ceiling (0.75*input + 0.25*output); 0 = free models only.
@@ -105,7 +111,7 @@ models:
   - {id: e-infra/coder,            provider: e_infra, upstream: coder,            cost_in: 0, cost_out: 0, seed_rank: 46, context: 262144,  output: 49152, tools: true, image: true,  aa_slug: null, oc_id: null}
   - {id: e-infra/mini,             provider: e_infra, upstream: mini,             cost_in: 0, cost_out: 0, seed_rank: 25, context: 131072,  output: 32768, tools: true, image: false, aa_slug: openai/gpt-oss-120b, oc_id: null}
 
-  # ---- OpenCode free models (provider disabled above until the key can call) -
+  # ---- OpenCode free models (curated; paid models come from discovery) -------
   - {id: opencode/deepseek-v4.1-flash-free, provider: opencode, upstream: deepseek-v4.1-flash-free, cost_in: 0, cost_out: 0, seed_rank: 36, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: deepseek-v4.1-flash}
   - {id: opencode/minimax-m3.1-flash-free,  provider: opencode, upstream: minimax-m3.1-flash-free,  cost_in: 0, cost_out: 0, seed_rank: 34, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: minimax-m3.1-flash}
   - {id: opencode/glm-5.3-flash-free,       provider: opencode, upstream: glm-5.3-flash-free,       cost_in: 0, cost_out: 0, seed_rank: 32, context: 200000, output: 32000, tools: true, image: false, aa_slug: null, oc_id: glm-5.3-flash}

@@ -5,9 +5,11 @@ Two pieces make llm-auto-router a first-class OpenCode provider:
 1. **Provider config** (`opencode.jsonc.example`) — registers a `router` provider
    with the five presets as selectable models.
 2. **Plugin** (`plugins/router-tags/index.ts`) — tags each request with the
-   OpenCode flow kind (`x-oc-kind`) and session id (`x-oc-session`) so the
-   gateway can send auxiliary calls (title/compaction/generate) to the cheap
-   `low` preset and group spend by session.
+   OpenCode flow kind (`x-oc-kind`), session id (`x-oc-session`), stable project
+   id (`x-oc-project`), project root (`x-oc-project-root`) and current worktree
+   (`x-oc-worktree`) so the gateway can send auxiliary calls
+   (title/compaction/generate) to the cheap `low` preset and attribute durable
+   usage and work history to sessions and projects.
 
 ## Install
 
@@ -39,4 +41,6 @@ opencode --model router/high
 ```
 
 If the plugin is not installed the gateway still works — it just treats every
-call as a `primary` request and cannot attribute spend to a session.
+call as a `primary` request and cannot attribute spend to a session or project.
+Recopy the plugin after upgrading to enable project and worktree attribution.
+No API session lookup or prompt content is needed for these identity headers.

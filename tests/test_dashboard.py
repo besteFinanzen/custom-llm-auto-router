@@ -111,6 +111,20 @@ def test_dashboard_html(spend_client):
     assert 'id="token-chart"' in r.text and 'id="token-daily"' in r.text
     assert "tokens processed" in r.text
     assert "x-oc-session" in r.text
+    assert 'id="all-cost"' in r.text and 'id="all-tokens"' in r.text
+    assert 'id="all-reqs"' in r.text and "/dashboard/history" in r.text
+
+
+def test_history_dashboard_and_api_without_database(spend_client):
+    r = run(spend_client.get("/dashboard/history"))
+    assert r.status_code == 200
+    assert "history &amp; work" in r.text
+    for field in ('id="days"', 'id="metric"', 'id="project"', 'id="daily-chart"',
+                  'id="providers"', 'id="presets"', 'id="models"'):
+        assert field in r.text
+    assert "/v1/history" in r.text
+    response = run(spend_client.get("/v1/history"))
+    assert response.status_code == 503
 
 
 def test_root_redirects_to_dashboard(spend_client):

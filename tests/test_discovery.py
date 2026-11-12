@@ -52,6 +52,41 @@ def test_sync_discovered_filters_and_defaults(tmp_path, stub):
     assert load_discovered(tmp_path / "state")["fake/fresh"].provider == "fake"
 
 
+def test_sync_discovered_uses_provider_pricing_and_limits(tmp_path, stub):
+    stub.httpd.state["models"] = [
+        {
+            "id": "paid",
+            "cost": {"text": {"input": {"price": 1.5}, "output": {"price": 6}}},
+            "limit": {"context": 123456, "output": 7890},
+            "capabilities": {"tools": {"supported": False}},
+            "modalities": {"input": ["text", "image/png"]},
+        },
+        {"id": "unknown-price"},
+    ]
+    (tmp_path / "state").mkdir()
+    catalog = Catalog.load(_write(tmp_path, DISCOVERY_YAML.format(url=stub.base_url)))
+    catalog.providers["fake"].discovery = {
+        "default_cost_in": 999, "default_cost_out": 999,
+        "default_context": 64000, "default_output": 4096,
+    }
+    with httpx.Client() as c:
+        out = sync_discovered(catalog, tmp_path / "state", c)
+
+    paid = out["models"]["fake/paid"]
+    assert paid["cost_in"] == 1.5
+    assert paid["cost_out"] == 6
+    assert paid["context"] == 123456
+    assert paid["output"] == 7890
+    assert paid["tools"] is False
+    assert paid["image"] is True
+
+    unknown = out["models"]["fake/unknown-price"]
+    assert unknown["cost_in"] == 999
+    assert unknown["cost_out"] == 999
+    assert unknown["context"] == 64000
+    assert unknown["output"] == 4096
+
+
 def test_load_discovered_skips_curated_duplicates(tmp_path):
     catalog = Catalog.load(_write(tmp_path, DISCOVERY_YAML.format(
         url="http://127.0.0.1:9/v1")))

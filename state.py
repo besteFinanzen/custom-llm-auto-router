@@ -12,7 +12,6 @@ import tempfile
 import time
 
 USAGE_KEEP_DAYS = 3
-TOKEN_HISTORY_KEEP_DAYS = 90
 
 
 class State:
@@ -287,13 +286,20 @@ class State:
         tot["reqs"] += 1
         tot["cost"] = round(tot.get("cost", 0.0) + cost_usd, 6)
         if preset:
-            agg = self.data["by_preset"].setdefault(preset, {"reqs": 0, "cost": 0.0})
+            agg = self.data["by_preset"].setdefault(
+                preset, {"reqs": 0, "cost": 0.0, "in": 0, "out": 0})
             agg["reqs"] += 1
             agg["cost"] = round(agg.get("cost", 0.0) + cost_usd, 6)
+            # These token fields are forward-only; older aggregates predate them.
+            agg["in"] = int(agg.get("in") or 0) + tokens_in
+            agg["out"] = int(agg.get("out") or 0) + tokens_out
         if model:
-            agg = self.data["by_model"].setdefault(model, {"reqs": 0, "cost": 0.0})
+            agg = self.data["by_model"].setdefault(
+                model, {"reqs": 0, "cost": 0.0, "in": 0, "out": 0})
             agg["reqs"] += 1
             agg["cost"] = round(agg.get("cost", 0.0) + cost_usd, 6)
+            agg["in"] = int(agg.get("in") or 0) + tokens_in
+            agg["out"] = int(agg.get("out") or 0) + tokens_out
         daily = self.data.get("daily")
         if not daily or daily.get("date") != self._today():
             daily = {"date": self._today(), "by_preset": {}, "by_model": {},
@@ -339,10 +345,8 @@ class State:
         hist["out"] += tokens_out
         hist["reqs"] += 1
         hist["cost"] = round(hist.get("cost", 0.0) + cost_usd, 6)
-        cutoff = (datetime.date.today()
-                  - datetime.timedelta(days=TOKEN_HISTORY_KEEP_DAYS)).isoformat()
-        for d in [d for d in self.data["daily_history"] if d < cutoff]:
-            self.data["daily_history"].pop(d, None)
+        # `daily_history` is deliberately unlimited; PostgreSQL stores per-request
+        # detail while this compact JSON series remains a local fallback.
         await self._save()
 
     # ---- balance cache ----------------------------------------------------

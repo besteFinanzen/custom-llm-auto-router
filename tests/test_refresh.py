@@ -22,6 +22,22 @@ def test_mdev_record_uses_exact_free_variant():
     assert rec["cost"] == {"input": 0, "output": 0}
 
 
+def test_mdev_record_supports_google_models():
+    m = Model({"id": "google/gemini-test", "provider": "google",
+               "upstream": "gemini-test"})
+    mdev = {"google": {"models": {
+        "gemini-test": {"cost": {"input": 0.3, "output": 2.5},
+                        "limit": {"context": 1048576, "output": 65536},
+                        "tool_call": True},
+    }}}
+
+    rec = mdev_record(mdev, "google", m)
+
+    assert rec["cost"] == {"input": 0.3, "output": 2.5}
+    assert rec["limit"] == {"context": 1048576, "output": 65536}
+    assert rec["tool_call"] is True
+
+
 def test_mdev_record_never_falls_back_to_paid_base():
     m = _model()
     mdev = {"openrouter": {"models": {

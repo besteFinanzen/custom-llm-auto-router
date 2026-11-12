@@ -32,7 +32,8 @@ from matching import best_match
 AA_URL = "https://artificialanalysis.ai/api/v2/language/models/free"
 OC_URL = "https://opencode.ai/data/index.json"
 MODELS_DEV_URL = "https://models.dev/api.json"
-MODELS_DEV_PROVIDERS = {"openrouter": "openrouter", "deepseek": "deepseek", "opencode": "opencode"}
+MODELS_DEV_PROVIDERS = {"openrouter": "openrouter", "deepseek": "deepseek",
+                        "opencode": "opencode", "google": "google"}
 AA_FIELDS = [("artificial_analysis_intelligence_index", "aa_intelligence"),
              ("artificial_analysis_coding_index", "aa_coding"),
              ("artificial_analysis_agentic_index", "aa_agentic")]

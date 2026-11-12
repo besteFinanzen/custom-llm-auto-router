@@ -14,7 +14,7 @@ OpenCode ──► router/low|medium|high|orchestrator|coder
           ranks  ← Artificial Analysis + opencode.ai/data + models.dev (daily)
           state  ← 429 cooldowns, token/request budgets, balance cache
               ▼
-        e-Infra · OpenCode free · OpenRouter · DeepSeek
+        e-Infra · OpenCode free · OpenRouter · DeepSeek · Google AI
 ```
 
 ## Quick start
@@ -27,7 +27,10 @@ cp .env.example .env
 $EDITOR .env
 # 2. refresh ranks/costs (works without AA key; AA adds benchmark indices)
 python refresh.py
-# 3. run
+# 3. optional durable history (PostgreSQL 15+; does not modify system PostgreSQL)
+deploy/setup-postgres.sh
+
+# 4. run
 python gateway.py            # 127.0.0.1:4141
 #    or: uvicorn gateway:app --host 127.0.0.1 --port 4141
 ```
@@ -45,6 +48,40 @@ definition:
 
 The companion plugin (`integrations/opencode/plugins/router-tags`) tags every
 request with `x-oc-kind`, so title/compaction calls always use the `low` tier.
+It also forwards the session, stable project identifier (`x-oc-project`),
+canonical project root and worktree, enabling project costs and work attribution
+without an additional session lookup.
+
+## Durable usage and history
+
+Set the standard `DATABASE_URL` to a local or external PostgreSQL database to
+store one event per successful upstream call, including tokens, cost, selected
+model/provider/preset, latency, session and optional project identity. Schema
+creation and the one-time legacy aggregate import run automatically at startup;
+the original JSON state remains intact for routing/budget checks. No prompts or
+responses are stored. `ROUTER_DATABASE_URL` remains a supported legacy alias.
+
+Daily history is no longer pruned. Older lifetime totals and daily aggregates
+are migrated as separate baselines, avoiding double-counting overlapping JSON
+buckets. Migrate only once; a database marker makes restarts idempotent.
+
+```bash
+# Optional local PostgreSQL 18 Docker instance on localhost:55432
+deploy/setup-postgres.sh
+
+# Or use an existing, external, or managed instance (works with SSL URL options)
+export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE'
+
+# Test-only, disposable database (never a database containing real history)
+TEST_ROUTER_DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/router_test' \
+  .venv/bin/python -m pytest -q tests/test_postgres.py
+```
+
+The JSON totals continue to drive budgets even if the analytics database is
+temporarily unavailable; usage-event write failures are exposed in `/v1/status`
+under `tracking`. For production PostgreSQL (including Dokploy/private-network
+services), see **[deploy/DOKPLOY.md](deploy/DOKPLOY.md)**. No database container is
+required alongside the application when `DATABASE_URL` points elsewhere.
 
 ## Presets
 
@@ -100,6 +137,28 @@ estimate for streams) × the chosen model's prices:
 Optional spend caps: `balance.budget.daily_cost_usd` on a budget provider stops
 routing to it once today's recorded cost reaches the cap (e.g. e-Infra, or any
 provider without a balance API).
+
+## History, projects and work tracking
+
+**http://127.0.0.1:4141/dashboard/history** provides 7/30/90-day and all-time
+ranges; token/input/output/cost/request metrics; a daily chart with a cumulative
+line; detailed daily rows; provider/preset/model breakdowns; project selection;
+and separate human/AI/mixed activity durations. Selecting a project filters the
+historical usage and work panels; lifetime aggregates cannot be assigned to a
+project retroactively. The live dashboard also shows total cost, requests and
+input/output tokens, with per-provider lifetime tokens.
+
+`GET /v1/history?days=90&metric=tokens&project=PROJECT_ID` returns the same data;
+`days=0` means unlimited history. `GET /v1/spend` now contains `all_time` and
+`tracking`. The `POST /v1/work/events` endpoint accepts optional external
+activity records (`actor: human|ai|mixed`, `duration_s`, project/session/root,
+source, kind and category). These are explicit caller-reported durations, not a
+claim that model latency equals total human/AI coding time. Widget or WakaTime
+adapters can use stable UUIDs for idempotent event ingestion; operational
+metadata is sanitized to exclude prompts, responses and other content fields.
+
+See the integration guide for the plugin setup. Upgrade/recopy it to start
+project attribution for new events.
 
 ## Live dashboard
 
@@ -189,9 +248,10 @@ source.
 | Provider | Mechanism |
 |---|---|
 | e-Infra | no known API → local daily token budget (`budget.daily_tokens`) |
-| OpenCode free | local daily request cap (`rate_only.daily_requests`); key required even for free models. Disabled by default: the key gets 403 outside the OpenCode client (`enabled: false` in `catalog.yaml`) |
+| OpenCode | local daily request cap (`rate_only.daily_requests`); key required even for free models. Free models also have an undisclosed upstream quota (`Retry-After` on 429); paid models use the per-model prices published by `/models`. |
 | OpenRouter | `GET /auth/key` credits check (+ price data from models.dev) |
 | DeepSeek | `GET /user/balance` real balance check (`min_balance`) |
+| Google AI (Gemini) | no public credit endpoint; upstream 429s trigger cooldown/failover (prices from models.dev) |
 
 API-based checks are cached (`policy.balance_cache_seconds`), fail open, and
 exhausted providers are excluded with an explicit reason in the decision log.
@@ -217,8 +277,11 @@ curl -s -X POST localhost:4141/v1/reset-failures
 | `POST /v1/chat/completions` | routing entrypoint (OpenAI-compatible, streaming supported) |
 | `GET /v1/models` | exposes the presets + approximate cost metadata |
 | `GET /v1/status` | providers, balances, usage, **costs**, preset estimates, cooldowns, **failures**, rank freshness, **discovery** snapshot |
-| `GET /v1/spend` | live spending snapshot: today, by provider/preset/model, recent decisions, cooldowns |
-| `GET /dashboard` | live spending dashboard (HTML); `GET /` redirects here |
+| `GET /v1/spend` | live spending snapshot: today, all-time totals, providers, recent decisions |
+| `GET /v1/history` | daily totals, project filter, range/metric, provider/preset/model breakdowns, work summary (PostgreSQL) |
+| `POST /v1/work/events` | idempotent human/AI/mixed activity event with sanitized operational metadata |
+| `GET /dashboard` | live dashboard with all-time cards; `GET /` redirects here |
+| `GET /dashboard/history` | long-range/project/work dashboard (PostgreSQL) |
 | `POST /v1/reload` | reload `catalog.yaml` + `state/ranks.json` |
 | `POST /v1/reset-failures` | clear failure counters, backoff and cooldowns |
 | `GET /healthz` | liveness |
@@ -252,6 +315,9 @@ Optional headers for finer control:
 - `x-oc-kind: title | compaction | generate` — force the cheap `low` preset for
   auxiliary calls regardless of the requested tier.
 - `x-oc-session: <id>` — group spend per session on the dashboard.
+- `x-oc-project: <stable project id>`, `x-oc-project-root: <canonical root>` and
+  `x-oc-worktree: <working directory>` — attribute new usage/history records;
+  sent automatically by the bundled OpenCode plugin.
 
 ## Install as a user service
 
@@ -270,7 +336,7 @@ elsewhere.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q     # 72 tests, scriptable mock upstreams
+.venv/bin/python -m pytest -q     # 76 passed + 5 skipped, scriptable mock upstreams
 ```
 
 ## Caveats

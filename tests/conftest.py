@@ -10,8 +10,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import os  # noqa: E402
 
 os.environ.setdefault("ROUTER_TITLES_CMD", "")  # hermetic: no opencode subprocess in tests
+os.environ.setdefault("ROUTER_DATABASE_URL", "")  # opt in explicitly for PostgreSQL tests
+os.environ.setdefault("DATABASE_URL", "")  # never connect to the developer's default database
 
 from tests.stub import StubServer  # noqa: E402
+import gateway  # noqa: F401,E402  # construct the default app before per-test DSNs
 
 # one event loop for the whole session: the gateway's AsyncClient must stay on
 # a single loop, and ASGITransport only works inside a loop.

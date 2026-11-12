@@ -40,9 +40,10 @@ class StubHandler(BaseHTTPRequestHandler):
             return self._send(200, {"is_available": True, "balance_infos": [
                 {"currency": "USD", "total_balance": "2.50"}]})
         if self.path.endswith("/models"):
-            ids = self.server.state.get("models", [])
-            return self._send(200, {"object": "list",
-                                    "data": [{"id": m, "object": "model"} for m in ids]})
+            models = self.server.state.get("models", [])
+            data = [dict(m, object="model") if isinstance(m, dict)
+                    else {"id": m, "object": "model"} for m in models]
+            return self._send(200, {"object": "list", "data": data})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):

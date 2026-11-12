@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>llm-auto-router · history</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#121823; --panel2:#0f141d; --line:#1f2937;
+    --fg:#e6edf3; --muted:#8b949e; --green:#3fb950; --blue:#58a6ff;
+    --amber:#d29922; --purple:#bc8cff; --pink:#f778ba; --red:#f85149; --cyan:#39d2c0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:var(--cyan);text-decoration:none}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,14,20,.95);backdrop-filter:blur(8px);z-index:5;gap:14px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600}
+  .brand .sub{color:var(--muted);font-weight:400}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 8px var(--red);transition:.3s}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  nav{display:flex;gap:6px}
+  nav a{padding:5px 10px;border:1px solid var(--line);border-radius:6px;color:var(--muted)}
+  nav a.active,nav a:hover{color:var(--fg);border-color:#334155;background:var(--panel)}
+  select,button{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 9px;font:inherit;cursor:pointer}
+  select:hover,button:hover{border-color:#334155}
+  main{padding:18px 22px 40px;max-width:1380px;margin:0 auto}
+  .hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat label{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+  .stat b{display:block;font-size:25px;margin:2px 0;font-weight:600;overflow:hidden;text-overflow:ellipsis}
+  .stat .muted{font-size:12px}
+  .row{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .controls label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .grid{display:grid;grid-template-columns:1.7fr 1fr;gap:12px;margin-bottom:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  @media(max-width:900px){.grid,.grid3{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
+  .panel h2{font-size:12px;margin:0 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:600;display:flex;justify-content:space-between;gap:12px}
+  .panel h2 span.muted{text-transform:none;letter-spacing:0;font-weight:400}
+  .muted{color:var(--muted)} .ok{color:var(--green)} .warn{color:var(--amber)} .err{color:var(--red)}
+  .bar-row{display:grid;grid-template-columns:170px 1fr 105px;align-items:center;gap:10px;margin:7px 0;font-size:12.5px}
+  .bar-row .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:4px;background:var(--blue);transition:width .4s}
+  .bar-row .val{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  td{padding:5px 8px;border-bottom:1px solid #161e2b;white-space:nowrap;font-variant-numeric:tabular-nums}
+  td.model{max-width:360px;overflow:hidden;text-overflow:ellipsis}
+  .table-wrap{overflow:auto;max-height:440px}
+  .chart{width:100%;height:230px;display:block}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:11.5px;color:var(--muted);margin:8px 0 2px}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .legend i{width:9px;height:9px;border-radius:2px;display:inline-block}
+  .work{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .work div{padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
+  .work b{display:block;font-size:22px}
+  .empty{padding:22px;text-align:center;color:var(--muted)}
+  footer{padding:14px 2px 0;font-size:11.5px;color:var(--muted);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .srow{cursor:pointer}.srow:hover td{background:#161e2b}.srow.sel td{background:#1b2431}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="dot"></span> llm-auto-router <span class="sub">· history &amp; work</span></div>
+  <div class="right">
+    <nav><a href="/dashboard">live</a><a class="active" href="/dashboard/history">history</a></nav>
+    <span class="muted" id="updated">connecting…</span>
+    <button id="refresh">refresh</button>
+  </div>
+</header>
+<main>
+  <section class="row">
+    <div class="controls">
+      <label for="days">range</label>
+      <select id="days">
+        <option value="7">7 days</option>
+        <option value="30">30 days</option>
+        <option value="90" selected>90 days</option>
+        <option value="0">all time</option>
+      </select>
+      <label for="metric">metric</label>
+      <select id="metric">
+        <option value="tokens" selected>tokens</option>
+        <option value="input">input tokens</option>
+        <option value="output">output tokens</option>
+        <option value="cost">cost</option>
+        <option value="requests">requests</option>
+      </select>
+      <label for="project">project</label>
+      <select id="project"><option value="">all projects</option></select>
+    </div>
+    <span class="muted" id="range-note"></span>
+  </section>
+
+  <section class="hero">
+    <div class="stat"><label>all-time spend</label><b id="at-cost">—</b><span class="muted" id="at-cost-meta">&nbsp;</span></div>
+    <div class="stat"><label>all-time tokens</label><b id="at-tokens">—</b><span class="muted" id="at-token-meta">&nbsp;</span></div>
+    <div class="stat"><label>all-time requests</label><b id="at-reqs">—</b><span class="muted" id="at-req-meta">&nbsp;</span></div>
+    <div class="stat"><label id="range-cost-label">range spend</label><b id="range-cost">—</b><span class="muted" id="range-cost-meta">&nbsp;</span></div>
+    <div class="stat"><label>human coding</label><b id="human-time">—</b><span class="muted" id="human-meta">&nbsp;</span></div>
+    <div class="stat"><label>AI coding</label><b id="ai-time">—</b><span class="muted" id="ai-meta">&nbsp;</span></div>
+  </section>
+
+  <section class="grid">
+    <div class="panel">
+      <h2><span id="daily-title">daily usage</span><span class="muted" id="daily-meta"></span></h2>
+      <div id="daily-chart"></div>
+      <div class="legend"><span><i id="metric-swatch" style="background:var(--blue)"></i><span id="metric-legend">tokens/day</span></span><span><i style="background:var(--cyan)"></i>cumulative</span></div>
+    </div>
+    <div class="panel">
+      <h2><span>range summary</span><span class="muted" id="range-meta"></span></h2>
+      <div id="range-summary"></div>
+      <h2 style="margin-top:16px">work · human vs AI</h2>
+      <div class="work" id="work"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:9px">Human and AI time come from optional work/activity events. Usage above tracks AI model calls and token cost.</div>
+    </div>
+  </section>
+
+  <section class="grid3">
+    <div class="panel"><h2>by provider</h2><div id="providers"></div></div>
+    <div class="panel"><h2>by preset</h2><div id="presets"></div></div>
+    <div class="panel"><h2>by model</h2><div id="models"></div></div>
+  </section>
+
+  <section class="panel" style="margin-bottom:14px">
+    <h2><span>projects</span><span class="muted" id="projects-meta">click to filter all statistics</span></h2>
+    <div class="table-wrap">
+      <table><thead><tr><th>project</th><th>root</th><th>requests</th><th>tokens</th><th>cost</th><th>last activity</th></tr></thead><tbody id="projects"></tbody></table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2><span>daily detail</span><span class="muted" id="detail-meta"></span></h2>
+    <div class="table-wrap">
+      <table><thead><tr><th>date</th><th>requests</th><th>input</th><th>output</th><th>tokens</th><th>cost</th></tr></thead><tbody id="daily"></tbody></table>
+    </div>
+  </section>
+
+  <footer>
+    <span>PostgreSQL usage store · unlimited retention · project attribution via x-oc-project headers</span>
+    <span id="store-meta"></span>
+  </footer>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const money = v => { v = +v || 0;
+  if (v === 0) return '$0.00';
+  if (v >= 1) return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(4);
+  return '$' + v.toFixed(6);
+};
+const tok = n => { n = +n || 0;
+  return n >= 1e9 ? (n/1e9).toFixed(2) + 'B' : n >= 1e6 ? (n/1e6).toFixed(2) + 'M' : n >= 1e3 ? (n/1e3).toFixed(1) + 'k' : String(n);
+};
+const secs = n => { n = +n || 0;
+  const h = Math.floor(n / 3600), m = Math.round((n % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const dt = s => { if (!s) return '—'; const d = new Date(s.length === 10 ? s + 'T00:00:00' : s); return isNaN(d) ? s : d.toLocaleString([], {dateStyle:'medium', timeStyle:s.length === 10 ? undefined : 'short'}); };
+const metricValue = (row, metric) => {
+  if (metric === 'cost') return +row.cost || 0;
+  if (metric === 'requests') return +row.reqs || 0;
+  if (metric === 'input') return +row.in || 0;
+  if (metric === 'output') return +row.out || 0;
+  return +row.tokens || ((+row.in || 0) + (+row.out || 0));
+};
+const metricText = (v, metric) => metric === 'cost' ? money(v) : metric === 'requests' ? String(+v || 0) : tok(v);
+const metricLabel = {tokens:'tokens/day', input:'input tokens/day', output:'output tokens/day', cost:'spend/day', requests:'requests/day'};
+const metricColor = {tokens:'#58a6ff', input:'#58a6ff', output:'#3fb950', cost:'#d29922', requests:'#bc8cff'};
+let days = 90, metric = 'tokens', project = '', lastData = null, loading = false;
+
+function barRow(label, sub, value, max, color, right) {
+  const pct = max > 0 ? Math.max(value > 0 ? 2 : 0, Math.round(value / max * 100)) : 0;
+  return `<div class="bar-row" title="${esc(label)} · ${esc(sub)}">
+    <span class="lbl">${esc(label)} <span class="muted">${esc(sub)}</span></span>
+    <span class="bar"><i style="width:${pct}%;background:${color}"></i></span>
+    <span class="val">${esc(right)}</span>
+  </div>`;
+}
+
+function renderBreakdown(el, rows, color) {
+  const entries = [...(rows || [])].sort((a, b) => metricValue(b, metric) - metricValue(a, metric));
+  if (!entries.length) { el.innerHTML = '<div class="empty">no usage in this range</div>'; return; }
+  const max = Math.max(...entries.map(row => metricValue(row, metric)), 0) || 1;
+  el.innerHTML = entries.slice(0, 30).map(row =>
+    barRow(row.key, `· ${row.reqs} reqs`, metricValue(row, metric), max, color, metricText(metricValue(row, metric), metric))
+  ).join('');
+}
+
+function renderSummary(s, label) {
+  const rows = [
+    ['spend', money(s.cost)],
+    ['tokens', tok(s.tokens || (s.in + s.out))],
+    ['input', tok(s.in)],
+    ['output', tok(s.out)],
+    ['requests', String(s.reqs || 0)],
+  ];
+  $('#range-summary').innerHTML = `<div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px">${esc(label)}</div>` +
+    rows.map(([k, v]) => `<div class="row" style="margin-bottom:5px"><span class="muted">${k}</span><b>${v}</b></div>`).join('');
+}
+
+function renderWork(work) {
+  const w = work || {};
+  const items = [['human', w.human], ['ai', w.ai], ['mixed', w.mixed]];
+  $('#work').innerHTML = items.map(([name, item]) => {
+    item = item || {};
+    return `<div><label class="muted" style="font-size:11px;text-transform:uppercase">${name}</label><b>${secs(item.seconds)}</b><span class="muted">${item.events || 0} events</span></div>`;
+  }).join('');
+}
+
+function renderChart(d) {
+  const el = $('#daily-chart');
+  const rows = d.daily || [];
+  if (!rows.length) { el.innerHTML = '<div class="empty">no usage history yet</div>'; $('#daily-meta').textContent = ''; return; }
+  const vals = rows.map(row => metricValue(row, metric));
+  const max = Math.max(...vals, 0) || 1;
+  const total = vals.reduce((a, b) => a + b, 0);
+  const W = 1000, H = 230, pad = 18, usable = W - pad * 2;
+  const bw = usable / rows.length;
+  let bars = '', cum = 0, pts = [];
+  rows.forEach((row, i) => {
+    const v = vals[i], x = pad + i * bw;
+    const h = total > 0 ? (v / max) * (H - 34) : 0;
+    const y = H - 22 - h;
+    bars += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${Math.max(1, bw - 1).toFixed(2)}" height="${h.toFixed(2)}" fill="${v > 0 ? metricColor[metric] : '#1b2431'}"><title>${esc(row.date)} · ${esc(metricText(v, metric))} · ${row.reqs || 0} reqs</title></rect>`;
+    cum += v;
+    if (total > 0) pts.push(`${(x + bw / 2).toFixed(2)},${(H - 22 - (cum / total) * (H - 34)).toFixed(2)}`);
+  });
+  const line = pts.length ? `<polyline fill="none" stroke="#39d2c0" stroke-width="1.6" points="${pts.join(' ')}"/>` : '';
+  const start = rows[0].date.slice(5), end = rows[rows.length - 1].date.slice(5);
+  el.innerHTML = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <text x="${pad}" y="${H - 5}" fill="#8b949e" font-size="10">${esc(start)}</text>
+    <text x="${W - pad}" y="${H - 5}" text-anchor="end" fill="#8b949e" font-size="10">${esc(end)}</text>
+    ${bars}${line}
+  </svg>`;
+  $('#daily-meta').textContent = `${metricText(total, metric)} total · peak ${metricText(max, metric)} · ${rows.length} days`;
+}
+
+function renderDaily(d) {
+  const rows = [...(d.daily || [])].reverse();
+  $('#daily').innerHTML = rows.length ? rows.map(row => `<tr>
+    <td>${esc(row.date)}</td><td>${row.reqs || 0}</td><td>${tok(row.in)}</td><td>${tok(row.out)}</td>
+    <td>${tok(row.tokens || (row.in + row.out))}</td><td class="${row.cost > 0 ? 'warn' : ''}">${money(row.cost)}</td>
+  </tr>`).join('') : '<tr><td colspan="6" class="empty">no daily rows yet</td></tr>';
+  $('#detail-meta').textContent = rows.length ? `${rows.length} days · newest first` : '';
+}
+
+function renderProjects(d) {
+  const entries = d.projects || [];
+  const sel = $('#project');
+  const current = project;
+  sel.innerHTML = '<option value="">all projects</option>' + entries.map(p =>
+    `<option value="${esc(p.id)}" title="${esc(p.root || p.id)}">${esc(p.root || p.id)} · ${money(p.cost)}</option>`).join('');
+  sel.value = current;
+  const rows = entries.map(p => {
+    const active = current && (current === p.id || current === p.root);
+    return `<tr class="srow${active ? ' sel' : ''}" data-project="${esc(p.id)}">
+      <td class="model">${esc(p.id)}</td><td class="model muted" title="${esc(p.root || '')}">${esc(p.root || '—')}</td>
+      <td>${p.reqs || 0}</td><td>${tok(p.tokens)}</td><td class="${p.cost > 0 ? 'warn' : ''}">${money(p.cost)}</td>
+      <td class="muted">${esc(dt(p.last_ts))}</td>
+    </tr>`;
+  }).join('');
+  $('#projects').innerHTML = rows || '<tr><td colspan="6" class="empty">no project-attributed requests yet — upgrade the OpenCode plugin</td></tr>';
+  $('#projects').querySelectorAll('.srow').forEach(tr => {
+    tr.onclick = () => {
+      project = project === tr.dataset.project ? '' : tr.dataset.project;
+      load();
+    };
+  });
+  $('#projects-meta').textContent = entries.length ? `${entries.length} projects · click to filter` : 'click to filter all statistics';
+}
+
+function render(d) {
+  lastData = d;
+  const at = d.all_time || {}, range = d.range || {}, tracked = d.tracked || {};
+  $('#at-cost').textContent = money(at.cost);
+  $('#at-cost-meta').textContent = tracked.since ? `since ${tracked.since}` : 'no tracking data';
+  $('#at-tokens').textContent = tok(at.tokens || ((at.in || 0) + (at.out || 0)));
+  $('#at-token-meta').textContent = `${tok(at.in)} in · ${tok(at.out)} out`;
+  $('#at-reqs').textContent = String(at.reqs || 0);
+  $('#at-req-meta').textContent = d.migrated && !project ? 'includes migrated totals' : 'live event store';
+  $('#range-cost').textContent = money(range.cost);
+  $('#range-cost-label').textContent = days ? `spend · last ${days} days` : 'spend · all time';
+  $('#range-cost-meta').textContent = `${range.reqs || 0} reqs`;
+  const w = d.work || {};
+  $('#human-time').textContent = secs((w.human || {}).seconds);
+  $('#human-meta').textContent = `${(w.human || {}).events || 0} events`;
+  $('#ai-time').textContent = secs((w.ai || {}).seconds);
+  $('#ai-meta').textContent = `${(w.ai || {}).events || 0} events`;
+  const scope = project ? `project ${project}` : 'all projects';
+  $('#range-note').textContent = `${scope} · ${days ? `last ${days} days` : 'all time'} · ${tracked.events || 0} tracked calls`;
+  renderChart(d);
+  renderSummary(range, `${days ? `last ${days} days` : 'all time'} · ${scope}`);
+  renderWork(d.work);
+  renderBreakdown($('#providers'), d.providers, '#58a6ff');
+  renderBreakdown($('#presets'), d.presets, '#bc8cff');
+  renderBreakdown($('#models'), d.models, '#39d2c0');
+  renderProjects(d);
+  renderDaily(d);
+  const workEvents = Object.values(d.work || {}).reduce((sum, actor) => sum + (actor.events || 0), 0);
+  $('#store-meta').textContent = `${tracked.events || 0} usage events · ${workEvents} work events`;
+  document.title = `${money(at.cost)} all time · llm-auto-router history`;
+}
+
+async function load() {
+  if (loading) return;
+  loading = true;
+  try {
+    const q = new URLSearchParams({days: String(days), metric, project});
+    const r = await fetch('/v1/history?' + q.toString(), {cache:'no-store'});
+    if (!r.ok) {
+      let detail = r.status;
+      try { detail = (await r.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    render(await r.json());
+    $('#dot').classList.add('on');
+    $('#updated').textContent = 'updated ' + new Date().toLocaleTimeString([], {hour12:false});
+  } catch (e) {
+    $('#dot').classList.remove('on');
+    $('#updated').textContent = 'history unavailable: ' + e.message;
+  } finally { loading = false; }
+}
+
+$('#days').value = String(days);
+$('#days').onchange = e => { days = +e.target.value; load(); };
+$('#metric').value = metric;
+$('#metric').onchange = e => {
+  metric = e.target.value;
+  $('#metric-swatch').style.background = metricColor[metric];
+  $('#metric-legend').textContent = metricLabel[metric];
+  if (lastData) render(lastData);
+  load();
+};
+$('#project').onchange = e => { project = e.target.value; load(); };
+$('#refresh').onclick = load;
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

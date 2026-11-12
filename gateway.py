@@ -6,18 +6,24 @@ POST /v1/chat/completions  model: "low" | "medium" | "high" | "orchestrator" | "
                            (aux kinds are forced to policy.aux_preset)
 GET  /v1/models            list exposed virtual models
 GET  /v1/status            selector view: providers, balances, cooldowns, usage, ranks
-GET  /v1/spend             live spending snapshot (today, by provider/preset/model, recent)
+GET  /v1/spend             live spending snapshot (today, all-time, providers, recent)
+GET  /v1/history           durable PostgreSQL history (range, projects, breakdowns)
 GET  /dashboard            live spending dashboard (HTML)
+GET  /dashboard/history    long-range usage and work dashboard (HTML)
+POST /v1/work/events       record human/AI work activity (no prompts or responses)
 POST /v1/reload            re-read catalog.yaml + state/ranks.json
 POST /v1/reset-failures    clear failure counters, backoff and cooldowns
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
+import os
 import pathlib
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -32,13 +38,14 @@ from sse import normalize_sse_stream
 from state import State
 from titles import TitleCache
 from discovery import load_discovered
+from tracker import PostgresUsage
 
 FAILOVER_STATUSES = {401, 403, 408, 409, 429, 500, 502, 503, 504}
 EST_CHARS_PER_TOKEN = 4
 DECISIONS_MAX_BYTES = 64 * 1024 * 1024
 MAX_REJECTED_LOGGED = 40
-HOST = "127.0.0.1"
-PORT = 4141
+HOST = os.environ.get("ROUTER_HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", os.environ.get("ROUTER_PORT", "4141")))
 DASHBOARD_URL = f"http://{HOST}:{PORT}/dashboard"
 
 
@@ -63,6 +70,22 @@ class Runtime:
         self.titles = TitleCache(state_dir / "titles.json")
         self.discovered: dict[str, Model] = {}
         self.models: dict[str, Model] = {}
+        self.tracker_error: str | None = None
+        # Standard for managed deployments; retain the original local alias.
+        database_url = (os.environ.get("DATABASE_URL") or
+                        os.environ.get("ROUTER_DATABASE_URL") or "").strip()
+        self.tracker: PostgresUsage | None = None
+        if database_url:
+            try:
+                self.tracker = PostgresUsage(database_url)
+                self.tracker.migrate_state(self.state.data)
+            except Exception as exc:
+                self.tracker_error = f"{type(exc).__name__}: {exc}"
+                logging.getLogger("uvicorn.error").error(
+                    "PostgreSQL usage store unavailable: %s", self.tracker_error)
+                if self.tracker:
+                    self.tracker.close()
+                self.tracker = None
         self._refresh_models()
 
     def _refresh_models(self) -> None:
@@ -100,10 +123,64 @@ class Runtime:
         with self.decisions_file.open("a") as f:
             f.write(json.dumps(rec, default=str) + "\n")
 
+    async def track_usage(self, model: Model, tokens_in: int, tokens_out: int,
+                          cost_usd: float, rec: dict, *, estimated: bool,
+                          stream: bool) -> None:
+        """Update routing aggregates, then persist the durable event.
+
+        A database outage must not take down model routing. Failures are logged
+        and surfaced in /v1/status rather than silently discarded.
+        """
+        await self.state.add_usage(
+            model.provider, tokens_in, tokens_out, cost_usd=cost_usd,
+            preset=rec.get("preset") or "direct", model=model.id,
+            session=rec.get("session"), kind=rec.get("kind"))
+        if not self.tracker:
+            return
+        event = {
+            "id": rec.get("request_id") or str(uuid.uuid4()),
+            "ts": rec.get("ts"),
+            "session": rec.get("session"),
+            "project_id": rec.get("project_id"),
+            "project_root": rec.get("project_root"),
+            "worktree": rec.get("worktree"),
+            "kind": rec.get("kind") or "primary",
+            "requested_preset": rec.get("preset_requested"),
+            "preset": rec.get("preset") or "direct",
+            "provider": model.provider,
+            "model": model.id,
+            "in": tokens_in,
+            "out": tokens_out,
+            "cost": cost_usd,
+            "estimated": estimated,
+            "latency_ms": rec.get("latency_ms"),
+            "stream": stream,
+        }
+        try:
+            await asyncio.to_thread(self.tracker.record_usage, event)
+            self.tracker_error = None
+        except Exception as exc:
+            self.tracker_error = f"{type(exc).__name__}: {exc}"
+            logging.getLogger("uvicorn.error").exception(
+                "failed to persist usage event for %s", model.id)
+
 
 def err(status: int, msg: str, typ: str = "router_error") -> JSONResponse:
     return JSONResponse(status_code=status,
                         content={"error": {"message": msg, "type": typ, "code": str(status)}})
+
+
+def _json_all_time(rt: Runtime) -> dict:
+    """Legacy JSON aggregate fallback when PostgreSQL is not configured."""
+    total = {"in": 0, "out": 0, "tokens": 0, "reqs": 0, "cost": 0.0}
+    for value in (rt.state.data.get("totals") or {}).values():
+        total["in"] += int(value.get("in") or 0)
+        total["out"] += int(value.get("out") or 0)
+        total["reqs"] += int(value.get("reqs") or 0)
+        total["cost"] += float(value.get("cost") or 0.0)
+    total["tokens"] = total["in"] + total["out"]
+    total["cost"] = round(total["cost"], 10)
+    return total
 
 
 def _discovery_status(rt: Runtime) -> dict:
@@ -210,12 +287,11 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
                 await resp.aclose()
                 tout = max(n // (EST_CHARS_PER_TOKEN * 2), 1)
                 cost = cost_of(est_in, tout)
-                await rt.state.add_usage(model.provider, est_in, tout, cost_usd=cost,
-                                         preset=rec.get("preset") or "direct", model=model.id,
-                                         session=rec.get("session"), kind=rec.get("kind"))
                 rec.update(chosen=model.id, latency_ms=int((time.time() - t0) * 1000), stream=True,
                            usage={"in": est_in, "out": tout, "estimated": True},
                            cost_usd=cost, price={"in": cost_in, "out": cost_out})
+                await rt.track_usage(model, est_in, tout, cost, rec,
+                                     estimated=True, stream=True)
                 rt.log_decision(rec)
                 await rt.state.record_success(model.id, model.provider)
         return StreamingResponse(gen(), media_type=resp.headers.get("content-type", "text/event-stream"),
@@ -233,12 +309,12 @@ async def proxy_call(rt: Runtime, model: Model, body: dict, stream: bool, rec: d
     tin = int(usage.get("prompt_tokens") or est_in)
     tout = int(usage.get("completion_tokens") or len(data) // (EST_CHARS_PER_TOKEN * 2))
     cost = cost_of(tin, tout)
-    await rt.state.add_usage(model.provider, tin, tout, cost_usd=cost,
-                             preset=rec.get("preset") or "direct", model=model.id,
-                             session=rec.get("session"), kind=rec.get("kind"))
     rec.update(chosen=model.id, latency_ms=int((time.time() - t0) * 1000), stream=False,
                usage={"in": usage.get("prompt_tokens"), "out": usage.get("completion_tokens")},
                cost_usd=cost, price={"in": cost_in, "out": cost_out})
+    await rt.track_usage(model, tin, tout, cost, rec,
+                         estimated=not bool(usage.get("prompt_tokens")),
+                         stream=False)
     rt.log_decision(rec)
     await rt.state.record_success(model.id, model.provider)
     return Response(content=data, status_code=200,
@@ -271,12 +347,17 @@ def _recent_decisions(rt: Runtime, limit: int = 40) -> list[dict]:
     return out
 
 
-def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None = None) -> FastAPI:
-    rt = Runtime(config_dir, pathlib.Path(state_dir or config_dir / "state"))
+def create_app(config_dir: pathlib.Path | None = None,
+               state_dir: pathlib.Path | None = None) -> FastAPI:
+    config_dir = pathlib.Path(config_dir or os.environ.get("ROUTER_CONFIG_DIR") or ROOT)
+    state_dir = pathlib.Path(state_dir or os.environ.get("ROUTER_STATE_DIR") or config_dir / "state")
+    rt = Runtime(config_dir, state_dir)
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         logging.getLogger("uvicorn.error").info("llm-auto-router: dashboard at %s", DASHBOARD_URL)
         yield
+        if rt.tracker:
+            rt.tracker.close()
 
     app = FastAPI(title="llm-auto-router", lifespan=lifespan)
 
@@ -286,8 +367,15 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
         requested = str(body.get("model") or "")
         kind = request.headers.get("x-oc-kind", "primary")
         session = (request.headers.get("x-oc-session") or "")[:128] or None
+        project_id = (request.headers.get("x-oc-project") or "")[:256] or None
+        project_root = (request.headers.get("x-oc-project-root") or "")[:1024] or None
+        worktree = (request.headers.get("x-oc-worktree") or "")[:1024] or None
+        directory = (request.headers.get("x-oc-directory") or "")[:1024] or None
         rec: dict[str, Any] = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                               "request_id": str(uuid.uuid4()),
                                "kind": kind, "session": session,
+                               "project_id": project_id, "project_root": project_root,
+                               "worktree": worktree or directory,
                                "requested": requested, "tried": [], "rejected": []}
         stream = bool(body.get("stream"))
         max_age = float(rt.policy.get("balance_cache_seconds", 3600))
@@ -392,6 +480,9 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
             "cooldowns": {mid: round(rt.state.cooldown_remaining(mid))
                           for mid in rt.state.data["cooldowns"] if rt.state.cooldown_remaining(mid) > 0},
             "failures": rt.state.data.get("failures", {}),
+            "tracking": (rt.tracker.status() if rt.tracker else
+                         {"enabled": False, "error": rt.tracker_error or
+                          "set DATABASE_URL to enable PostgreSQL history"}),
             "ranks": {"fetched_at": rt.ranks.data.get("fetched_at"),
                       "unmatched": rt.ranks.data.get("unmatched", []),
                       "review": rt.ranks.data.get("review", [])},
@@ -430,10 +521,21 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
         tokens_daily = [{"date": k, "in": v.get("in", 0), "out": v.get("out", 0),
                          "reqs": v.get("reqs", 0), "cost": v.get("cost", 0.0)}
                         for k, v in sorted((rt.state.data.get("daily_history") or {}).items())]
+        if rt.tracker:
+            try:
+                all_time = await asyncio.to_thread(rt.tracker.all_time)
+                tracking = await asyncio.to_thread(rt.tracker.status)
+            except Exception as exc:
+                all_time = _json_all_time(rt)
+                tracking = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            all_time = _json_all_time(rt)
+            tracking = {"enabled": False, "error": rt.tracker_error}
         return {
             "now": time.time(),
             "uptime_s": round(time.time() - rt.started_at),
             "today": agg,
+            "all_time": all_time,
             "providers": providers,
             "presets_today": daily.get("by_preset", {}),
             "models_today": daily.get("by_model", {}),
@@ -447,12 +549,71 @@ def create_app(config_dir: pathlib.Path = ROOT, state_dir: pathlib.Path | None =
                           if rt.state.cooldown_remaining(mid) > 0},
             "recent": _recent_decisions(rt),
             "discovery": _discovery_status(rt),
+            "tracking": tracking,
             "ranks": {"fetched_at": rt.ranks.data.get("fetched_at")},
         }
+
+    @app.get("/v1/history")
+    async def history(days: int = 0, metric: str = "tokens",
+                      project: str | None = None):
+        if not rt.tracker:
+            return err(503, rt.tracker_error or
+                       "PostgreSQL tracking is disabled; set DATABASE_URL",
+                       "tracking_unavailable")
+        try:
+            return await asyncio.to_thread(rt.tracker.history, days, metric, project)
+        except ValueError as exc:
+            return err(400, str(exc), "bad_history_query")
+        except Exception as exc:
+            rt.tracker_error = f"{type(exc).__name__}: {exc}"
+            return err(503, f"PostgreSQL history unavailable: {rt.tracker_error}",
+                       "tracking_unavailable")
+
+    @app.post("/v1/work/events")
+    async def work_event(request: Request):
+        if not rt.tracker:
+            return err(503, rt.tracker_error or
+                       "PostgreSQL tracking is disabled; set DATABASE_URL",
+                       "tracking_unavailable")
+        try:
+            payload = await request.json()
+        except Exception:
+            return err(400, "expected a JSON object", "bad_work_event")
+        if not isinstance(payload, dict):
+            return err(400, "expected a JSON object", "bad_work_event")
+        event = {
+            "id": payload.get("id"),
+            "ts": payload.get("ts"),
+            "session": payload.get("session") or request.headers.get("x-oc-session"),
+            "project_id": payload.get("project_id") or request.headers.get("x-oc-project"),
+            "project_root": (payload.get("project_root") or
+                             request.headers.get("x-oc-project-root")),
+            "worktree": payload.get("worktree") or request.headers.get("x-oc-worktree"),
+            "source": payload.get("source") or "api",
+            "actor": payload.get("actor"),
+            "kind": payload.get("kind") or "activity",
+            "category": payload.get("category"),
+            "duration_s": payload.get("duration_s") or 0,
+            "metadata": payload.get("metadata") or {},
+        }
+        try:
+            event_id = await asyncio.to_thread(rt.tracker.record_work_event, event)
+        except (ValueError, TypeError) as exc:
+            return err(400, str(exc), "bad_work_event")
+        except Exception as exc:
+            rt.tracker_error = f"{type(exc).__name__}: {exc}"
+            return err(503, f"PostgreSQL work store unavailable: {rt.tracker_error}",
+                       "tracking_unavailable")
+        return {"ok": True, "id": event_id}
 
     @app.get("/dashboard")
     async def dashboard():
         html = (pathlib.Path(__file__).resolve().parent / "dashboard.html").read_text()
+        return Response(html, media_type="text/html")
+
+    @app.get("/dashboard/history")
+    async def history_dashboard():
+        html = (pathlib.Path(__file__).resolve().parent / "history.html").read_text()
         return Response(html, media_type="text/html")
 
     @app.get("/")
