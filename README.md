@@ -173,6 +173,12 @@ Open `/worktracker` and sign in when prompted. The UI stores the token in the
 browser tab's session storage and sends it as `Authorization: Bearer …`; use
 `TRACKER_ADMIN_TOKEN` for full control, or `TRACKER_READ_TOKEN` for viewing.
 
+The gateway's `/v1/*` endpoints require a bearer key (OpenCode sends it via
+`settings.apiKey`). Set `ROUTER_API_KEY` (or `ROUTER_API_KEYS`) in `.env`, or
+generate router-scoped keys in the UI under API Keys. If no key is configured,
+`/v1` stays open for backward compatibility; creating the first router key turns
+enforcement on.
+
 The same image runs three roles (`APP_MODE=all|router|tracker`); the router-only
 role forwards usage and budget checks to `TRACKER_REMOTE_URL`. Configure
 `TRACKER_DATABASE_URL` and the `TRACKER_ADMIN_TOKEN` / `TRACKER_EDITOR_KEY` /
@@ -184,6 +190,9 @@ python -m worktracker migrate     # create/upgrade every tracker table
 python -m worktracker backfill    # project rows for pre-existing usage events
 python -m worktracker recompute   # re-derive commit -> AI attribution
 python -m worktracker status      # connectivity + row counts
+python -m worktracker keys create --name laptop --scope router   # mint a key
+python -m worktracker keys list                                        # list keys
+python -m worktracker keys revoke <id>                                 # revoke a key
 ```
 
 Tracking is plugin-first (OpenCode plugin tags each request with session,
@@ -336,8 +345,8 @@ This keeps strict OpenAI-compatible clients from rejecting the post-finish data.
 The gateway speaks the OpenAI **chat completions** API, so anything that can be
 pointed at a custom OpenAI-compatible base URL can use it. The `model` field is a
 **preset** (`low`, `medium`, `high`, `orchestrator`, `coder`), not an upstream
-model id; `router/<preset>` is also accepted. The gateway needs no auth of its
-own, so pass any non-empty key from clients that require one.
+model id; `router/<preset>` is also authenticated via `settings.apiKey`
+(see `.env.example` `ROUTER_API_KEY` or the UI API Keys page).
 
 | Harness | How |
 |---|---|

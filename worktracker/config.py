@@ -30,6 +30,8 @@ class Settings:
     budget_fail_closed: bool = False
     budget_cache_s: int = 5
     public_url: str = ""
+    router_api_key: str = ""
+    router_api_keys: str = ""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -58,6 +60,8 @@ class Settings:
             budget_fail_closed=_bool("TRACKER_BUDGET_FAIL_CLOSED", False),
             budget_cache_s=int(os.environ.get("TRACKER_BUDGET_CACHE_SECONDS", 5)),
             public_url=(os.environ.get("TRACKER_PUBLIC_URL") or "").rstrip("/"),
+            router_api_key=os.environ.get("ROUTER_API_KEY", ""),
+            router_api_keys=os.environ.get("ROUTER_API_KEYS", ""),
         )
 
     @property
@@ -79,3 +83,17 @@ class Settings:
             if value:
                 out[value] = scope
         return out
+
+    def router_tokens(self) -> dict[str, str]:
+        """router API key -> "router" scope, from ROUTER_API_KEY / ROUTER_API_KEYS."""
+        out: dict[str, str] = {}
+        for value in (self.router_api_key, *(self.router_api_keys.split(",") if self.router_api_keys else [])):
+            value = value.strip()
+            if value:
+                out[value] = "router"
+        return out
+
+    @property
+    def router_auth_enabled(self) -> bool:
+        """True if any router key is configured via env vars."""
+        return bool(self.router_tokens())

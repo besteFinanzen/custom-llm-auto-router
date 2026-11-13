@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import secrets
 import threading
 import urllib.parse
 import uuid
@@ -360,6 +361,18 @@ class TrackerStore:
                    ttft_ms integer,
                    error text)""",
             "CREATE INDEX IF NOT EXISTS router_model_stats_model_ts_idx ON router_model_stats (model, ts DESC)",
+            """CREATE TABLE IF NOT EXISTS tracker_api_keys (
+                   id uuid PRIMARY KEY,
+                   name text NOT NULL,
+                   prefix text NOT NULL UNIQUE,
+                   key_hash text NOT NULL UNIQUE,
+                   scope text NOT NULL,
+                   created_at timestamptz NOT NULL DEFAULT now(),
+                   created_by text,
+                   last_used_at timestamptz,
+                   expires_at timestamptz,
+                   revoked_at timestamptz)""",
+            "CREATE INDEX IF NOT EXISTS tracker_api_keys_scope_idx ON tracker_api_keys (scope, revoked_at)",
         ]
         with self._lock:
             for statement in statements:
@@ -485,6 +498,93 @@ class TrackerStore:
         return self._fetchall(
             "SELECT id, kind, value, created_at FROM tracker_project_aliases "
             "WHERE project_key = %s ORDER BY kind, value", (key,))
+
+    def create_api_key(self, name: str, scope: str, created_by: str,
+                       expires_at: dt.datetime | None = None) -> tuple[str, str]:
+        """Create a new API key and return ``(full_key, key_id)``.
+
+        The full key is only returned here; only its SHA-256 hash and a
+        display prefix are stored.  The full key is shown to the UI once.
+        """
+        key_id = str(uuid.uuid4())
+        prefix = secrets.token_hex(4)   # 8 hex chars
+        secret = secrets.token_urlsafe(32)   # 32 bytes -> ~43 url-safe chars
+        full = f"wt_{prefix}_{secret}"
+        key_hash = hashlib.sha256(full.encode()).hexdigest()
+        self._execute(
+            """INSERT INTO tracker_api_keys
+               (id, name, prefix, key_hash, scope, created_by, expires_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (key_id, name, prefix, key_hash, scope, created_by, expires_at))
+        return full, key_id
+
+    def list_api_keys(self) -> list[dict]:
+        """List keys without hashes or secrets."""
+        return self._fetchall(
+            """SELECT id, name, prefix, scope, created_at, created_by,
+                      last_used_at, expires_at, revoked_at
+               FROM tracker_api_keys ORDER BY created_at DESC""")
+
+    def resolve_api_key(self, token: str) -> dict | None:
+        """Resolve a full API key to ``{id, name, scope}`` if active and unexpired."""
+        if not token.startswith("wt_"):
+            return None
+        parts = token.split("_", 2)
+        if len(parts) != 3:
+            return None
+        prefix = parts[1]
+        row = self._fetchone(
+            "SELECT * FROM tracker_api_keys WHERE prefix = %s", (prefix,))
+        if not row:
+            return None
+        if row["revoked_at"] is not None:
+            return None
+        if row["expires_at"] is not None:
+            exp = row["expires_at"]
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=dt.timezone.utc)
+            if dt.datetime.now(dt.timezone.utc) > exp:
+                return None
+        key_hash = hashlib.sha256(token.encode()).hexdigest()
+        if not secrets.compare_digest(key_hash, row["key_hash"]):
+            return None
+        return {"id": row["id"], "name": row["name"], "scope": row["scope"]}
+
+    def touch_api_key(self, key_id: str | uuid.UUID) -> None:
+        """Throttled ``last_used_at`` bump (at most once per minute per key)."""
+        kid = key_id if isinstance(key_id, uuid.UUID) else uuid.UUID(str(key_id))
+        self._execute(
+            """UPDATE tracker_api_keys SET last_used_at = now()
+               WHERE id = %s
+                 AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')""",
+            (kid,))
+
+    def revoke_api_key(self, key_id: str | uuid.UUID) -> bool:
+        kid = key_id if isinstance(key_id, uuid.UUID) else uuid.UUID(str(key_id))
+        row = self._fetchone(
+            "SELECT id FROM tracker_api_keys WHERE id = %s AND revoked_at IS NULL", (kid,))
+        if not row:
+            return False
+        self._execute("UPDATE tracker_api_keys SET revoked_at = now() WHERE id = %s", (kid,))
+        return True
+
+    def has_active_api_keys(self) -> bool:
+        """True if at least one non-revoked, non-expired API key exists."""
+        row = self._fetchone(
+            """SELECT 1 FROM tracker_api_keys
+               WHERE revoked_at IS NULL
+                 AND (expires_at IS NULL OR expires_at > now())
+               LIMIT 1""")
+        return bool(row)
+
+    def has_router_api_key(self) -> bool:
+        """True if at least one active router-scoped API key exists."""
+        row = self._fetchone(
+            """SELECT 1 FROM tracker_api_keys
+               WHERE scope = 'router' AND revoked_at IS NULL
+                 AND (expires_at IS NULL OR expires_at > now())
+               LIMIT 1""")
+        return bool(row)
 
     def add_alias(self, key: str, kind: str, value: str) -> dict:
         self.resolve_project(key)
@@ -1905,5 +2005,6 @@ class TrackerStore:
                 "tracker_heartbeats, tracker_git_snapshots, tracker_tool_events, "
                 "tracker_commits, tracker_commit_files, tracker_commit_usage, "
                 "tracker_budgets, tracker_presence, tracker_job_profiles, "
-                "tracker_rejected_requests, tracker_refresh_runs, router_model_stats "
+                "tracker_rejected_requests, tracker_refresh_runs, tracker_api_keys, "
+                "router_model_stats "
                 "RESTART IDENTITY CASCADE")

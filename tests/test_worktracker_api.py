@@ -286,3 +286,84 @@ def test_live_event_stream_disconnects_cleanly(api, store, monkeypatch):
 
     events = run(once())
     assert events and events[0] == "event: presence"
+
+
+def test_api_keys_create_list_revoke(api, store):
+    h = {"authorization": "Bearer admin"}
+    # create a router key
+    result = api.post("/worktracker/api/keys", headers=h,
+                      json={"name": "OpenCode laptop", "scope": "router"})
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert "key" in body and "prefix" in body and "id" in body
+    assert body["key"].startswith("wt_")
+    assert body["scope"] == "router"
+    # list keys
+    listed = api.get("/worktracker/api/keys", headers=h)
+    assert listed.status_code == 200
+    keys = listed.json()["keys"]
+    assert len(keys) == 1
+    assert keys[0]["name"] == "OpenCode laptop"
+    assert keys[0]["scope"] == "router"
+    assert keys[0]["prefix"] == body["prefix"]
+    assert "key_hash" not in keys[0]  # hash never exposed
+    # create a read key with expiry
+    result2 = api.post("/worktracker/api/keys", headers=h,
+                       json={"name": "Read-only", "scope": "read", "expires_in_days": 90})
+    assert result2.status_code == 200
+    listed2 = api.get("/worktracker/api/keys", headers=h)
+    assert len(listed2.json()["keys"]) == 2
+    # revoke the first key
+    revoked = api.delete(f"/worktracker/api/keys/{body['id']}", headers=h)
+    assert revoked.status_code == 200
+    listed3 = api.get("/worktracker/api/keys", headers=h)
+    remaining = listed3.json()["keys"]
+    assert len(remaining) == 2  # revoked key still listed, marked revoked
+    revoked_key = next(k for k in remaining if k["id"] == body["id"])
+    assert revoked_key["revoked_at"] is not None
+    active_key = next(k for k in remaining if k["id"] != body["id"])
+    assert active_key["name"] == "Read-only"
+    assert active_key["revoked_at"] is None
+    # revoke again -> 404
+    assert api.delete(f"/worktracker/api/keys/{body['id']}", headers=h).status_code == 404
+
+
+def test_api_keys_scope_enforcement(api, store):
+    admin = {"authorization": "Bearer admin"}
+    editor = {"authorization": "Bearer editor"}
+    read = {"authorization": "Bearer read"}
+    hook = {"authorization": "Bearer hook"}
+    # non-admin scopes cannot manage keys
+    for headers in (editor, read, hook):
+        assert api.get("/worktracker/api/keys", headers=headers).status_code == 403
+        assert api.post("/worktracker/api/keys", headers=headers,
+                        json={"name": "x", "scope": "read"}).status_code == 403
+        assert api.delete("/worktracker/api/keys/00000000-0000-0000-0000-000000000000",
+                          headers=headers).status_code == 403
+    # admin can create keys of any scope
+    for scope in ("router", "read", "editor", "hook", "admin"):
+        result = api.post("/worktracker/api/keys", headers=admin,
+                          json={"name": scope + " key", "scope": scope})
+        assert result.status_code == 200, f"scope {scope}: {result.text}"
+
+
+def test_api_keys_invalid_scope(api, store):
+    h = {"authorization": "Bearer admin"}
+    assert api.post("/worktracker/api/keys", headers=h,
+                    json={"name": "bad", "scope": "superuser"}).status_code == 400
+    assert api.post("/worktracker/api/keys", headers=h,
+                    json={"name": "no-scope"}).status_code == 400
+
+
+def test_api_keys_open_mode_rejected(store, tmp_path):
+    from tests.test_worktracker_postgres import Client
+    settings = dataclasses.replace(
+        store.settings,
+        admin_token="", editor_key="", hook_token="", read_token="")
+    app = create_tracker_app(settings, store, config_dir=tmp_path, state_dir=tmp_path)
+    client = Client(app)
+    # no token configured -> key management refused with 409
+    assert client.get("/worktracker/api/keys").status_code == 409
+    assert client.post("/worktracker/api/keys",
+                       json={"name": "x", "scope": "read"}).status_code == 409
+    assert client.delete("/worktracker/api/keys/00000000-0000-0000-0000-000000000000").status_code == 409

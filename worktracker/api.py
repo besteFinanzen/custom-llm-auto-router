@@ -12,7 +12,7 @@ import datetime as dt
 import json
 import pathlib
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, ClassVar
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -51,25 +51,68 @@ def _token(request: Request) -> str:
 
 
 class Auth:
-    """Scope check: admin > editor/hook > read; no configured tokens = open."""
+    """Scope check with an explicit hierarchy.
 
-    def __init__(self, *scopes: str):
+    admin > editor > hook > read; ``router`` is inference-only and can never
+    read tracker data.  No configured tokens = open mode unless
+    ``require_configured`` is set (used by key-management routes).
+
+    ``_ALLOWED[token_scope]`` is the set of required scopes that token scope
+    satisfies.  ``admin`` satisfies everything and is short-circuited.
+    """
+
+    _ALLOWED: ClassVar[dict[str, set[str]]] = {
+        "router": {"router"},
+        "hook": {"hook", "read"},
+        "read": {"read"},
+        "editor": {"editor", "hook", "read"},
+    }
+
+    def __init__(self, *scopes: str, require_configured: bool = False):
         self.scopes = set(scopes)
+        self.require_configured = require_configured
 
-    def __call__(self, request: Request) -> str:
+    def _allowed(self, token_scope: str) -> bool:
+        if token_scope == "admin":
+            return True
+        return bool(self._ALLOWED.get(token_scope, set()) & self.scopes)
+
+    async def __call__(self, request: Request) -> str:
         settings: Settings | None = getattr(request.app.state, "wt_settings", None)
         if settings is None:
             return "open"
-        tokens = settings.tokens()
-        if not tokens:
+        store = getattr(request.app.state, "wt_store", None)
+        token = _token(request)
+
+        # 1. Env tokens (bootstrap / root credentials)
+        env_scope = settings.tokens().get(token)
+        if env_scope:
+            if self._allowed(env_scope):
+                return env_scope
+            raise HTTPException(status_code=403,
+                                detail=f"token scope '{env_scope}' cannot perform this action")
+
+        # 2. DB-backed keys (generated from the UI)
+        if store is not None:
+            key = await _run(store.resolve_api_key, token)
+            if key:
+                if self._allowed(key["scope"]):
+                    await _run(store.touch_api_key, key["id"])
+                    return key["scope"]
+                raise HTTPException(status_code=403,
+                                    detail=f"key scope '{key['scope']}' cannot perform this action")
+
+        # 3. No token matched
+        has_env = bool(settings.tokens())
+        has_db = await _run(store.has_active_api_keys) if store is not None else False
+        if not has_env and not has_db:
+            if self.require_configured:
+                raise HTTPException(status_code=409,
+                                    detail="tracker not configured: set TRACKER_ADMIN_TOKEN first")
             return "open"
-        scope = tokens.get(_token(request))
-        if not scope:
-            raise HTTPException(status_code=401, detail="invalid or missing API token")
-        if scope == "admin" or "read" in self.scopes or scope in self.scopes:
-            return scope
-        raise HTTPException(status_code=403,
-                            detail=f"token scope '{scope}' cannot perform this action")
+        if not has_env and not has_db:
+            return "open"
+        raise HTTPException(status_code=401, detail="invalid or missing API token")
 
 
 def _store(request: Request) -> TrackerStore:
@@ -138,6 +181,14 @@ async def overview(request: Request, days: int = 30):
 @router.get("/config", dependencies=[Depends(Auth("read"))])
 async def config(request: Request):
     settings = _settings(request)
+    store = getattr(request.app.state, "wt_store", None)
+    auth_enabled = bool(settings.tokens())
+    router_auth_enabled = settings.router_auth_enabled
+    if store is not None:
+        has_db_keys = await _run(store.has_active_api_keys)
+        auth_enabled = auth_enabled or has_db_keys
+        has_router_key = await _run(store.has_router_api_key)
+        router_auth_enabled = router_auth_enabled or has_router_key
     return {
         "timezone": settings.timezone,
         "attribution_mode": settings.attribution_mode,
@@ -148,7 +199,8 @@ async def config(request: Request):
         "redact_paths": settings.redact_paths,
         "public_url": settings.public_url,
         "app_mode": getattr(request.app.state, "wt_app_mode", "all"),
-        "auth_enabled": bool(settings.tokens()),
+        "auth_enabled": auth_enabled,
+        "router_auth_enabled": router_auth_enabled,
     }
 
 
@@ -157,11 +209,78 @@ async def config(request: Request):
 async def whoami(request: Request):
     """Small credential-validation endpoint used by the git hook installer."""
     settings = _settings(request)
-    tokens = settings.tokens()
+    store = getattr(request.app.state, "wt_store", None)
     token = _token(request)
-    return {"ok": True, "scope": tokens.get(token, "open"),
+    env_scope = settings.tokens().get(token)
+    if env_scope:
+        return {"ok": True, "scope": env_scope, "source": "env",
+                "mode": getattr(request.app.state, "wt_app_mode", "all"),
+                "timezone": settings.timezone,
+                "can_manage_keys": env_scope == "admin"}
+    if store is not None:
+        key = await _run(store.resolve_api_key, token)
+        if key:
+            return {"ok": True, "scope": key["scope"], "source": "key",
+                    "name": key["name"], "key_id": key["id"],
+                    "mode": getattr(request.app.state, "wt_app_mode", "all"),
+                    "timezone": settings.timezone,
+                    "can_manage_keys": key["scope"] == "admin"}
+    return {"ok": True, "scope": "open", "source": "open",
             "mode": getattr(request.app.state, "wt_app_mode", "all"),
-            "timezone": settings.timezone}
+            "timezone": settings.timezone,
+            "can_manage_keys": False}
+
+
+# ---------------------------------------------------------------- API keys
+_KEY_SCOPES = {"router", "read", "editor", "hook", "admin"}
+
+
+@router.get("/keys", dependencies=[Depends(Auth("admin", require_configured=True))])
+async def list_api_keys(request: Request):
+    """List all API keys (without hashes or secrets)."""
+    store = _store(request)
+    keys = await _run(store.list_api_keys)
+    return {"keys": keys}
+
+
+@router.post("/keys", dependencies=[Depends(Auth("admin", require_configured=True))])
+async def create_api_key(request: Request):
+    """Create a new API key.  The full secret is returned exactly once."""
+    body = await _json(request)
+    if not isinstance(body, Mapping):
+        raise HTTPException(400, "body must be an object")
+    name = str(body.get("name") or "").strip()
+    scope = str(body.get("scope") or "").strip()
+    expires_at = body.get("expires_at")
+    if not name:
+        raise HTTPException(400, "name is required")
+    if scope not in _KEY_SCOPES:
+        raise HTTPException(400, f"invalid scope: {scope or '(missing)'}")
+    if expires_at is not None:
+        try:
+            expires_at = dt.datetime.fromisoformat(str(expires_at))
+        except ValueError as exc:
+            raise HTTPException(400, "expires_at must be an ISO-8601 timestamp") from exc
+    store = _store(request)
+    try:
+        full_key, key_id = await _run(
+            store.create_api_key, name, scope, "ui", expires_at)
+    except Exception as exc:
+        raise _bad(exc) from exc
+    return {"key": full_key, "id": key_id, "name": name, "scope": scope,
+            "prefix": full_key.split("_")[1],
+            "expires_at": expires_at.isoformat() if expires_at else None}
+
+
+@router.delete("/keys/{key_id}",
+               dependencies=[Depends(Auth("admin", require_configured=True))])
+async def revoke_api_key(request: Request, key_id: str):
+    """Soft-revoke an API key (sets ``revoked_at``)."""
+    store = _store(request)
+    ok = await _run(store.revoke_api_key, key_id)
+    if not ok:
+        raise HTTPException(404, "key not found or already revoked")
+    return {"ok": True, "id": key_id}
 
 
 # NOTE: project keys are full git remotes or paths ("host/org/repo",

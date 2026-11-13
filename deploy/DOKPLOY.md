@@ -29,15 +29,21 @@ ROUTER_STATE_DIR=/data
 PORT=4141
 ```
 
-Use the database's **private service hostname**, not `127.0.0.1` or `localhost`.
-Those loopback names refer to the application container itself. For an external
-provider use its externally reachable hostname and credentials.
-
 Also configure the provider keys used by `catalog.yaml`, such as
 `OPENROUTER_API_KEY`, `E_INFRA_API_KEY`, `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY`,
 and `GEMINI_API_KEY`. Only configured providers are enabled. `AA_API_KEY` is
 optional for scheduled rank refreshes; rank/discovery snapshots are persisted
 separately.
+
+Set `ROUTER_API_KEY` (or comma-separated `ROUTER_API_KEYS`) to require bearer
+auth on `/v1/*`. OpenCode sends it via `settings.apiKey`; clients without a valid
+key get `401`. If unset, `/v1` stays open for backward compatibility — creating
+the first router-scoped API key in the Worktracker UI turns enforcement on.
+Generate one with `openssl rand -hex 32`.
+
+Use the database's **private service hostname**, not `127.0.0.1` or `localhost`.
+Those loopback names refer to the application container itself. For an external
+provider use its externally reachable hostname and credentials.
 
 Mount a persistent volume at **`/data`** for cooldown/budget state, discovery and
 rank caches, titles, and the bounded recent-decision log. The image defaults
@@ -56,11 +62,12 @@ Point OpenCode's provider base URL at the deployed gateway plus `/v1`, and insta
 supplies the session, stable project ID, canonical project root and worktree in
 request headers. Usage then appears under `/dashboard/history`.
 
-**The gateway currently has no built-in authentication.** Keep the service on a
-private network or protect it with authenticated reverse-proxy access before
-publishing it through a public Dokploy domain. `/v1/work/events` accepts work
-activity, while `/v1/reload` and `/v1/reset-failures` are operator controls; these
-must not be exposed to an untrusted network.
+The gateway requires `Authorization: Bearer <key>` on `/v1/*` when `ROUTER_API_KEY`
+(or `ROUTER_API_KEYS`) is set; OpenCode sends it via `settings.apiKey`. Without a
+configured key, `/v1` stays open for backward compatibility — create a router-scoped
+key in the UI (API Keys page) to close it. `/v1/work/events` accepts work activity,
+while `/v1/reload` and `/v1/reset-failures` are operator controls (admin scope);
+do not expose them to an untrusted network without a key.
 
 ## Configuration
 
@@ -102,6 +109,12 @@ Scopes are ordered `admin > editor/hook > read`. Every authenticated token may
 read; `editor`/`hook` may ingest heartbeats, snapshots, tool events, commits and
 usage; only `admin` may edit budgets and job profiles. An empty token disables
 that scope's requirement, so set all four in production.
+
+API keys are an alternative to env tokens, created and managed in the Worktracker
+UI under **API Keys** (admin-only). A key carries a single scope
+(`router`, `read`, `editor`, `hook`, `admin`) and the full secret is shown once
+at creation. Use a `router`-scoped key as OpenCode's `settings.apiKey` so the
+gateway authenticates it without env tokens.
 
 - Dashboard: `https://<domain>/worktracker` — the first visit asks for an API
   token; sign in with `TRACKER_ADMIN_TOKEN` for full control (a read token works

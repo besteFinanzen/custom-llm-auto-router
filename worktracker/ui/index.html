@@ -132,11 +132,50 @@
     </div>
   </form>
 </dialog>
+<dialog id="key-dialog">
+  <form id="key-form">
+    <h2 id="key-title">Create API key</h2>
+    <p class="muted">The full key is shown only once after creation. Copy it and store it safely.</p>
+    <label for="key-name">Name</label>
+    <input id="key-name" type="text" placeholder="e.g. OpenCode laptop" required>
+    <label for="key-scope">Scope</label>
+    <select id="key-scope">
+      <option value="router">Router — OpenCode /v1 inference only</option>
+      <option value="read">Read — tracker data, spend, history</option>
+      <option value="editor">Editor — tracker write</option>
+      <option value="hook">Hook — work events</option>
+      <option value="admin">Admin — manage keys, reload, reset</option>
+    </select>
+    <label for="key-expires">Expires after (days, optional)</label>
+    <input id="key-expires" type="number" min="1" placeholder="e.g. 90">
+    <p id="key-error" class="muted" style="color:var(--bad); min-height:20px; margin:8px 0 0 0;"></p>
+    <div class="row right">
+      <button class="btn" type="button" id="key-cancel">Cancel</button>
+      <button class="btn primary" type="submit" id="key-submit">Create</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="key-secret-dialog">
+  <h2 id="key-secret-title">Copy your key</h2>
+  <p class="muted">This is the only time the full key is shown.</p>
+  <label for="key-secret-value">Key</label>
+  <div class="row" style="margin-bottom:10px">
+    <input id="key-secret-value" type="text" readonly spellcheck="false">
+    <button class="btn small" id="key-copy">Copy</button>
+  </div>
+  <label>Prefix</label>
+  <div class="mono" id="key-secret-prefix" style="margin-bottom:10px;"></div>
+  <label>OpenCode provider settings</label>
+  <textarea id="key-secret-opencode" readonly rows="4" style="width:100%; font-family:monospace; font-size:12px; background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:8px;"></textarea>
+  <div class="row right" style="margin-top:12px">
+    <button class="btn primary" id="key-secret-done">I have saved the key</button>
+  </div>
+</dialog>
 <div class="toast" id="toast"></div>
 <script>
 "use strict";
 const API = "/worktracker/api";
-const state = { view: "overview", days: 30, data: {}, config: null, key: "" };
+const state = { view: "overview", days: 30, data: {}, config: null, key: "", keyName: "", canManageKeys: false };
 
 function h(html) { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 function esc(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -230,7 +269,7 @@ function copy(obj, keys) { const out = {}; keys.forEach(k => { if (obj && obj[k]
 const VIEWS = [
   ["overview", "Overview"], ["projects", "Projects"], ["models", "Models"],
   ["live", "Live"], ["commits", "Commits"], ["budgets", "Budgets"],
-  ["jobs", "Jobs"], ["settings", "Settings"],
+  ["jobs", "Jobs"], ["keys", "API Keys"], ["settings", "Settings"],
 ];
 function renderNav() {
   const nav = document.getElementById("nav");
@@ -265,7 +304,8 @@ try { authToken = sessionStorage.getItem(TOKEN_STORAGE) || ""; } catch { authTok
 function renderIdentity() {
   const labels = {open: "Open access", read: "Read only", editor: "Editor", hook: "Hook", admin: "Admin"};
   const button = document.getElementById("auth-open");
-  if (button) button.textContent = labels[authScope] || "Sign in";
+  const label = labels[authScope] || "Sign in";
+  if (button) button.textContent = state.keyName ? label + " (" + esc(state.keyName) + ")" : label;
 }
 function storeToken(token) {
   authToken = token;
@@ -292,6 +332,8 @@ async function authenticate(token) {
   storeToken(candidate);
   const me = await api("/whoami");
   authScope = (me && me.scope) || "read";
+  state.keyName = (me && me.name) || "";
+  state.canManageKeys = !!(me && me.can_manage_keys);
   renderIdentity();
   const dialog = document.getElementById("auth-dialog");
   if (dialog && dialog.open) dialog.close();
@@ -553,7 +595,7 @@ views.models = async () => {
         td(o.rt_latency_p50_ms != null ? Math.round(o.rt_latency_p50_ms) + " ms" : "—", "num") +
         td(o.rt_success_rate != null ? o.rt_success_rate.toFixed(0) + "%" : "—", "num") +
         td('<span class="pill">open</span>', "num") + "</tr>";
-    }).join("");
+    });
     const section = h('<div class="panel"><div class="row" style="margin-bottom:8px">' +
       '<h2 style="margin:0">' + esc(pv.provider) + "</h2>" +
       '<span class="pill">' + (pv.models || []).length + " models</span>" +
@@ -917,6 +959,101 @@ views.settings = async () => {
   };
   return wrap;
 };
+
+// ---------------------------------------------------------------- API keys
+views.keys = async () => {
+  if (authScope !== "admin") {
+    return h('<div class="panel"><h1>API Keys</h1><div class="empty">Admin access required.</div></div>');
+  }
+  let keys;
+  try { keys = await api("/keys"); } catch (e) { keys = {keys: []}; toast(e.message, true); }
+  const list = keys.keys || [];
+  const now = new Date();
+  const rows = list.map(k => {
+    let status;
+    if (k.revoked_at) status = '<span class="pill bad">revoked</span>';
+    else if (k.expires_at && new Date(k.expires_at) < now) status = '<span class="pill bad">expired</span>';
+    else status = '<span class="pill good">active</span>';
+    return '<tr>' +
+      td('<b>' + esc(k.name) + '</b><div class="muted mono">' + esc(k.prefix) + "</div>") +
+      td('<span class="mono">' + esc(k.scope) + "</span>") +
+      td(when(k.created_at)) +
+      td(k.last_used_at ? when(k.last_used_at) : "—", "muted") +
+      td(status) +
+      td('<button class="btn small" data-revoke="' + esc(k.id) + '">Revoke</button>');
+  }).join("");
+  const wrap = h('<div><h1>API Keys</h1>' +
+    '<div class="row" style="margin-bottom:14px"><span class="right"><button class="btn primary" id="newkey">Create key</button></span></div>' +
+    '<div class="panel">' + table(["Name", "Scope", "Created", "Last used", "Status", ""], rows, "No keys yet") + "</div>" +
+    '<p class="muted" style="margin-top:8px">The full key is shown only once after creation. Copy it and store it safely.</p>' +
+    '</div>');
+  wrap.querySelector("#newkey").onclick = () => {
+    const d = document.getElementById("key-dialog");
+    const error = document.getElementById("key-error");
+    if (!d) return;
+    if (error) error.textContent = "";
+    document.getElementById("key-form").reset();
+    d.showModal();
+  };
+  wrap.querySelectorAll("[data-revoke]").forEach(el => el.onclick = async () => {
+    if (!confirm("Revoke this API key?")) return;
+    try { await api("/keys/" + el.dataset.revoke, {method: "DELETE"}); toast("Revoked"); render(); }
+    catch (e) { toast(e.message, true); }
+  });
+  return wrap;
+};
+
+// key dialog handlers
+(function() {
+  const d = document.getElementById("key-dialog");
+  const form = document.getElementById("key-form");
+  const cancel = document.getElementById("key-cancel");
+  const secretD = document.getElementById("key-secret-dialog");
+  const copyBtn = document.getElementById("key-copy");
+  const secretInput = document.getElementById("key-secret-value");
+  const prefixEl = document.getElementById("key-secret-prefix");
+  const opencodeEl = document.getElementById("key-secret-opencode");
+  const doneBtn = document.getElementById("key-secret-done");
+  if (!d || !form) return;
+  cancel.onclick = () => d.close();
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const error = document.getElementById("key-error");
+    error.textContent = "";
+    const name = document.getElementById("key-name").value.trim();
+    const scope = document.getElementById("key-scope").value;
+    const days = document.getElementById("key-expires").value.trim();
+    if (!name) { error.textContent = "Enter a name"; return; }
+    const body = {name, scope};
+    if (days) body.expires_in_days = Number(days);
+    try {
+      const result = await api("/keys", {method: "POST", body: JSON.stringify(body)});
+      d.close();
+      showKeySecret(result.key, result.prefix);
+    } catch (err) {
+      error.textContent = err && err.message ? err.message : "Creation failed";
+    }
+  };
+  if (copyBtn && secretInput) {
+    copyBtn.onclick = async () => {
+      try { await navigator.clipboard.writeText(secretInput.value); copyBtn.textContent = "Copied!"; setTimeout(() => copyBtn.textContent = "Copy", 1500); }
+      catch { secretInput.select(); try { document.execCommand("copy"); } catch {}; copyBtn.textContent = "Copied!"; setTimeout(() => copyBtn.textContent = "Copy", 1500); }
+    };
+  }
+  if (doneBtn && secretD) doneBtn.onclick = () => { secretD.close(); render(); };
+})();
+
+function showKeySecret(key, prefix) {
+  const d = document.getElementById("key-secret-dialog");
+  const input = document.getElementById("key-secret-value");
+  const prefixEl = document.getElementById("key-secret-prefix");
+  const opencodeEl = document.getElementById("key-secret-opencode");
+  if (!d || !input || !prefixEl || !opencodeEl) return;
+  input.value = key;
+  prefixEl.textContent = prefix;
+  opencodeEl.textContent = JSON.stringify({settings: {baseURL: "https://tracker.nizent.de/v1", apiKey: key}}, null, 2);
+  d.showModal();
+}
 
 // ---------------------------------------------------------------- authentication bootstrap
 async function start() {

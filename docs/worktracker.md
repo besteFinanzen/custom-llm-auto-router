@@ -122,12 +122,33 @@ Tracker management routes are under `/worktracker/api` (scopes: `admin` >
 - Budgets: list, create, delete, `budget/check`
 - Jobs: list, put, delete, preview, export, import
 - Refresh: status (`GET`) and run (`POST`)
+- API keys (admin only): `GET /worktracker/api/keys` (list),
+  `POST /worktracker/api/keys` (create; full key returned once),
+  `DELETE /worktracker/api/keys/{id}` (revoke). Keys carry a single scope
+  (`router`, `read`, `editor`, `hook`, `admin`) and are stored hashed; the
+  full secret is never persisted or logged.
 - Live presence stream: `GET /worktracker/api/events` (SSE)
 - WakaTime: `/api/v1/users/current`, `/heartbeats`, `/heartbeats.bulk`,
   `/users/current/heartbeats`, `/users/current/heartbeats.bulk` (the official
   wakatime-cli spelling, including the VS Code extension),
   `/users/current/status_bar/today`, `/users/current/summaries`,
   `/users/current/durations`, `/projects`
+
+## Gateway authentication
+
+The gateway's `/v1/*` endpoints (`chat/completions`, `models`, `status`, `spend`,
+`history`, `work/events`, `reload`, `reset-failures`) require
+`Authorization: Bearer <key>` when `ROUTER_API_KEY` (or `ROUTER_API_KEYS`) is
+configured, or when at least one router-scoped API key exists in the database.
+OpenCode sends the key via `settings.apiKey`; no VPN, tunnel, or per-session
+setup is needed. If no key is configured anywhere, `/v1` stays open for
+backward compatibility — creating the first router-scoped key turns enforcement
+on.
+
+Key scopes for `/v1` routes: `router` unlocks `chat/completions` + `models` +
+`status`; `read`/`editor`/`admin` unlock `models` + `status` + `spend` +
+`history`; `hook`/`admin` unlock `work/events`; only `admin` unlocks `reload` +
+`reset-failures`.
 
 ## Maintenance CLI
 
@@ -136,6 +157,9 @@ python -m worktracker migrate      # create/upgrade every tracker table
 python -m worktracker backfill     # project rows for legacy usage events
 python -m worktracker recompute --days 90   # re-derive commit -> AI attribution
 python -m worktracker status       # connectivity check + row counts (JSON)
+python -m worktracker keys create --name laptop --scope router   # mint a key
+python -m worktracker keys list                                        # list keys
+python -m worktracker keys revoke <id>                                 # revoke a key
 ```
 
 ## Tests and coverage

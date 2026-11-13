@@ -26,6 +26,12 @@ Make sure the gateway is running first (`python gateway.py`, listening on
 `http://[IP_ADDRESS]:4141` by default) and adjust `settings.baseURL` if you bound
 it elsewhere.
 
+The gateway requires a bearer key on `/v1/*`. In `opencode.jsonc.example`,
+`settings.apiKey` holds a router-scoped API key — generate one in the
+Worktracker UI (API Keys page) or set `ROUTER_API_KEY` in the gateway's `.env`.
+OpenCode sends it as `Authorization: Bearer <key>` on every request, so no VPN,
+tunnel, or per-session setup is needed.
+
 ## Use
 
 ```bash

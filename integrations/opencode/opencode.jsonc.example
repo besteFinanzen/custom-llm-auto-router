@@ -4,9 +4,10 @@
 // ~/.config/opencode/opencode.jsonc. Adjust the baseURL if the gateway runs on
 // another host or port (default: http://127.0.0.1:4141/v1).
 //
-// The gateway is OpenAI-compatible and needs no auth; OpenCode still sends its
-// own credentials through, which is fine. Upstream provider keys are configured
-// in the gateway's .env, not here.
+// The gateway requires a bearer key on /v1/*: set `settings.apiKey` to a
+// router-scoped API key (generated in the Worktracker UI or via `ROUTER_API_KEY`).
+// OpenCode sends it as `Authorization: Bearer <key>` on every request.
+// Upstream provider keys are configured in the gateway's .env, not here.
 {
   "$schema": "https://opencode.ai/config.json",
 
@@ -19,7 +20,8 @@
       "name": "Auto Router (llm-auto-router)",
       "package": "@opencode/ai/providers/openai-compatible",
       "settings": {
-        "baseURL": "http://127.0.0.1:4141/v1"
+        "baseURL": "https://tracker.nizent.de/v1",
+        "apiKey": "wt_<8hex-prefix>_<32-byte-secret>"
       },
       "models": {
         "low": {

@@ -27,6 +27,7 @@ export interface Identity {
   branch?: string
   head?: string
   repoRoot?: string
+  repoRemote?: string
   device: string
   tool: string
   toolVersion?: string
@@ -67,6 +68,7 @@ export function requestHeaders(identity: Identity): Record<string, string> {
     headers["x-oc-no-git"] = "1"
   }
   if (identity.repoRoot) headers["x-oc-repo-root"] = identity.repoRoot
+  if (identity.repoRemote) headers["x-oc-repo-remote"] = identity.repoRemote
   return headers
 }
 
@@ -236,3 +238,30 @@ export function headersWithToken(extra: Record<string, string> = {}): Record<str
 }
 
 export const COMMIT_LOG_FORMAT = "%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%s%x1e"
+
+/** Normalise a git remote into a stable `host/owner/repo` project key. */
+export function normalizeRemote(remote: string): string | undefined {
+  if (!remote) return undefined
+  let host = ""
+  let path = ""
+  if (remote.includes("://")) {
+    try {
+      const u = new URL(remote)
+      host = (u.hostname || "").toLowerCase()
+      path = u.pathname
+    } catch {
+      return undefined
+    }
+  } else {
+    const hostPath = remote.split("@").pop() ?? remote
+    const sep = hostPath.indexOf(":")
+    if (sep >= 0) {
+      host = hostPath.slice(0, sep).toLowerCase()
+      path = hostPath.slice(sep + 1)
+    } else {
+      path = hostPath
+    }
+  }
+  path = "/" + path.replace(/^\/+/, "").replace(/\/+$/, "").replace(/\.git$/, "")
+  return host ? `${host}${path}` : path.replace(/^\/+/, "")
+}

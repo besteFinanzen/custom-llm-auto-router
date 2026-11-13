@@ -16,6 +16,7 @@ command simply connects and reports what is present.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import sys
 from typing import Any
@@ -82,6 +83,65 @@ def cmd_status(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keys_create(args: argparse.Namespace) -> int:
+    store = _connect()
+    try:
+        expires_at: dt.datetime | None = None
+        if args.expires_in_days:
+            expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+                days=args.expires_in_days)
+        key, key_id = store.create_api_key(
+            name=args.name, scope=args.scope,
+            created_by=args.created_by or "cli",
+            expires_at=expires_at,
+        )
+        print(f"Created API key {key_id}")
+        print(f"  name:    {args.name}")
+        print(f"  scope:   {args.scope}")
+        print(f"  prefix:  {key.split('_')[1]}")
+        print(f"  key:     {key}")
+        print("  Save the full key now — it will not be shown again.")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_keys_list(_: argparse.Namespace) -> int:
+    store = _connect()
+    try:
+        keys = store.list_api_keys()
+        if not keys:
+            print("No API keys.")
+            return 0
+        for k in keys:
+            status = "revoked" if k.get("revoked_at") else (
+                "expired" if k.get("expires_at") else "active")
+            print(f"{k['id']}  {k['name']:<28} {k['scope']:<10} {k['prefix']}  {status}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_keys_revoke(args: argparse.Namespace) -> int:
+    store = _connect()
+    try:
+        ok = store.revoke_api_key(args.key_id)
+        if ok:
+            print(f"Revoked API key {args.key_id}")
+        else:
+            print(f"API key {args.key_id} not found or already revoked")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_keys(args: argparse.Namespace) -> int:
+    handlers: dict[str, Any] = {
+        "create": cmd_keys_create, "list": cmd_keys_list, "revoke": cmd_keys_revoke,
+    }
+    return int(handlers[args.keys_command](args))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="worktracker",
                                      description="Work tracker database maintenance")
@@ -94,6 +154,20 @@ def build_parser() -> argparse.ArgumentParser:
     recompute.add_argument("--limit", type=int, default=200,
                            help="maximum commits per project")
     sub.add_parser("status", help="print connectivity and row counts as JSON")
+
+    keys = sub.add_parser("keys", help="manage API keys (create, list, revoke)")
+    keys_sub = keys.add_subparsers(dest="keys_command", required=True)
+    create = keys_sub.add_parser("create", help="create a new API key")
+    create.add_argument("--name", required=True, help="display name for the key")
+    create.add_argument("--scope", required=True,
+                        choices=["router", "read", "editor", "hook", "admin"],
+                        help="key scope")
+    create.add_argument("--created-by", default="cli", help="creator identifier")
+    create.add_argument("--expires-in-days", type=int, default=None,
+                        help="expire the key after N days")
+    keys_sub.add_parser("list", help="list all API keys")
+    revoke = keys_sub.add_parser("revoke", help="revoke an API key")
+    revoke.add_argument("key_id", help="key ID to revoke")
     return parser
 
 
@@ -102,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers: dict[str, Any] = {
         "migrate": cmd_migrate, "backfill": cmd_backfill,
         "recompute": cmd_recompute, "status": cmd_status,
+        "keys": cmd_keys,
     }
     return int(handlers[args.command](args))
 

@@ -3,6 +3,7 @@ import {
   COMMIT_LOG_FORMAT,
   CommitWatcher,
   extractFileChanges,
+  normalizeRemote,
   parseCommitLog,
   parseGitState,
   requestHeaders,
@@ -39,6 +40,17 @@ describe("requestHeaders", () => {
     expect(headers["x-oc-no-git"]).toBeUndefined()
   })
 
+  it("emits x-oc-repo-remote when the identity carries a repo remote", () => {
+    const headers = requestHeaders({
+      ...base,
+      project: "acme/app",
+      projectRoot: "/src/app",
+      repoRemote: "github.com/acme/app",
+      repoRoot: "/src/app",
+    })
+    expect(headers["x-oc-repo-remote"]).toBe("github.com/acme/app")
+  })
+
   it("marks non-git sessions so enforcement can allow them", () => {
     const headers = requestHeaders({ ...base, sessionDirectory: "/tmp/scratch" })
     expect(headers["x-oc-no-git"]).toBe("1")
@@ -47,6 +59,26 @@ describe("requestHeaders", () => {
 
   it("defaults the flow kind", () => {
     expect(requestHeaders({ ...base, kind: "" })["x-oc-kind"]).toBe("primary")
+  })
+})
+
+describe("normalizeRemote", () => {
+  it("turns HTTPS remotes into host/owner/repo", () => {
+    expect(normalizeRemote("https://github.com/acme/app.git")).toBe("github.com/acme/app")
+    expect(normalizeRemote("https://gitlab.com/group/sub/project/")).toBe("gitlab.com/group/sub/project")
+  })
+
+  it("turns scp-style remotes into host/owner/repo", () => {
+    expect(normalizeRemote("git@github.com:acme/app.git")).toBe("github.com/acme/app")
+    expect(normalizeRemote("git@gitlab.example.com:team/repo.git")).toBe("gitlab.example.com/team/repo")
+  })
+
+  it("drops a trailing .git and normalises the path", () => {
+    expect(normalizeRemote("https://github.com/acme/app/")).toBe("github.com/acme/app")
+  })
+
+  it("returns undefined for empty input", () => {
+    expect(normalizeRemote("")).toBeUndefined()
   })
 })
 

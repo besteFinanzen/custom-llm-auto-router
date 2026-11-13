@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import pathlib
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -29,7 +30,7 @@ from functools import partial
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 import balance as balance_mod
@@ -68,6 +69,128 @@ MAX_REJECTED_LOGGED = 40
 HOST = os.environ.get("ROUTER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", os.environ.get("ROUTER_PORT", "4141")))
 DASHBOARD_URL = f"http://{HOST}:{PORT}/dashboard"
+
+# --------------------------------------------------------------------------- /v1 auth
+# Router API keys: ROUTER_API_KEY (single) or ROUTER_API_KEYS (comma-separated).
+# A key authenticates Bearer tokens on /v1 routes.  When no key is configured
+# anywhere (no env key and no active DB key), /v1 stays open for backward
+# compatibility; creating the first router key in the UI turns enforcement on.
+_V1_ALLOWED: dict[str, set[str]] = {
+    "router": {"router"},
+    "read": {"read"},
+    "editor": {"read"},
+    "hook": {"hook"},
+    "admin": {"router", "read", "hook", "admin"},
+}
+_V1_REQUIRED: dict[str, set[str]] = {
+    "chat": {"router"},
+    "models": {"router", "read"},
+    "status": {"router", "read"},
+    "spend": {"read"},
+    "history": {"read"},
+    "work": {"hook"},
+    "reload": {"admin"},
+    "reset": {"admin"},
+}
+
+
+def _extract_bearer(request: Request) -> str | None:
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization.split(" ", 1)[1].strip()
+    return None
+
+
+def _env_router_keys() -> list[str]:
+    single = (os.environ.get("ROUTER_API_KEY") or "").strip()
+    multi = (os.environ.get("ROUTER_API_KEYS") or "").strip()
+    keys: list[str] = []
+    if single:
+        keys.append(single)
+    if multi:
+        keys.extend(k.strip() for k in multi.split(",") if k.strip())
+    return keys
+
+
+def _env_token_scopes(settings) -> dict[str, str]:
+    """Map a bearer token to its scope from env tracker tokens + router keys."""
+    out: dict[str, str] = {}
+    if settings is None:
+        return out
+    for token, scope in settings.tokens().items():
+        if token:
+            out[token] = scope
+    for key in _env_router_keys():
+        out[key] = "router"
+    return out
+
+
+def _v1_scope_allows(token_scope: str, required: set[str]) -> bool:
+    if token_scope == "admin":
+        return True
+    return bool(_V1_ALLOWED.get(token_scope, set()) & required)
+
+
+def _any_v1_auth_configured(settings, store) -> bool:
+    if settings and settings.tokens():
+        return True
+    if settings and settings.router_auth_enabled:
+        return True
+    if store is not None:
+        try:
+            if store.has_active_api_keys():
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def v1_auth(required: str = "router"):
+    """FastAPI dependency factory: require a bearer key with the given /v1 scope."""
+
+    async def _auth(request: Request):
+        settings = getattr(request.app.state, "wt_settings", None)
+        store = getattr(request.app.state, "wt_store", None)
+
+        token = _extract_bearer(request)
+        token_scope: str | None = None
+
+        if token:
+            # 1. Env tokens (tracker tokens + router keys)
+            for env_token, scope in _env_token_scopes(settings).items():
+                if secrets.compare_digest(token, env_token):
+                    token_scope = scope
+                    break
+            # 2. DB keys (all/tracker mode only)
+            if token_scope is None and store is not None:
+                try:
+                    key = await asyncio.to_thread(store.resolve_api_key, token)
+                    if key:
+                        token_scope = key["scope"]
+                        await asyncio.to_thread(store.touch_api_key, key["id"])
+                except Exception:
+                    pass
+
+        # 3. No auth configured anywhere -> open for backward compatibility
+        if not _any_v1_auth_configured(settings, store):
+            return
+
+        # 4. Missing or invalid token
+        if token_scope is None:
+            raise HTTPException(
+                status_code=401,
+                detail="invalid or missing API key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # 5. Scope check
+        if not _v1_scope_allows(token_scope, _V1_REQUIRED[required]):
+            raise HTTPException(
+                status_code=403,
+                detail=f"token scope '{token_scope}' cannot perform this action",
+            )
+
+    return _auth
 
 
 class UpstreamFail(Exception):
@@ -568,7 +691,7 @@ def create_app(config_dir: pathlib.Path | None = None,
         app.include_router(worktracker_router, prefix="/worktracker/api")
         app.include_router(worktracker_waka, prefix="/api/v1")
 
-    @app.post("/v1/chat/completions")
+    @app.post("/v1/chat/completions", dependencies=[Depends(v1_auth("chat"))])
     async def chat(request: Request):
         try:
             body = await request.json()
@@ -776,7 +899,7 @@ def create_app(config_dir: pathlib.Path | None = None,
         return err(502, f"all candidates failed; last: {last.get('id')} -> {last.get('status')} "
                         f"{last.get('error', '')[:200]}", "upstream_error")
 
-    @app.get("/v1/models")
+    @app.get("/v1/models", dependencies=[Depends(v1_auth("models"))])
     async def models():
         now = int(time.time())
         data = []
@@ -785,7 +908,7 @@ def create_app(config_dir: pathlib.Path | None = None,
                          "router": preset_estimate(rt.catalog, name, rt.ranks, rt.state, rt.models)})
         return {"object": "list", "data": data}
 
-    @app.get("/v1/status")
+    @app.get("/v1/status", dependencies=[Depends(v1_auth("status"))])
     async def status():
         return {
             "presets": list(rt.catalog.presets),
@@ -827,7 +950,7 @@ def create_app(config_dir: pathlib.Path | None = None,
             "discovery": _discovery_status(rt),
         }
 
-    @app.get("/v1/spend")
+    @app.get("/v1/spend", dependencies=[Depends(v1_auth("spend"))])
     async def spend():
         agg = {"cost": 0.0, "reqs": 0, "in": 0, "out": 0}
         providers = {}
@@ -891,7 +1014,7 @@ def create_app(config_dir: pathlib.Path | None = None,
             "ranks": {"fetched_at": rt.ranks.data.get("fetched_at")},
         }
 
-    @app.get("/v1/history")
+    @app.get("/v1/history", dependencies=[Depends(v1_auth("history"))])
     async def history(days: int = 0, metric: str = "tokens",
                       project: str | None = None):
         if not rt.tracker:
@@ -907,7 +1030,7 @@ def create_app(config_dir: pathlib.Path | None = None,
             return err(503, f"PostgreSQL history unavailable: {rt.tracker_error}",
                        "tracking_unavailable")
 
-    @app.post("/v1/work/events")
+    @app.post("/v1/work/events", dependencies=[Depends(v1_auth("work"))])
     async def work_event(request: Request):
         if not rt.tracker:
             return err(503, rt.tracker_error or
@@ -958,12 +1081,12 @@ def create_app(config_dir: pathlib.Path | None = None,
     async def root():
         return RedirectResponse("/dashboard")
 
-    @app.post("/v1/reload")
+    @app.post("/v1/reload", dependencies=[Depends(v1_auth("reload"))])
     async def reload():
         rt.reload()
         return {"ok": True}
 
-    @app.post("/v1/reset-failures")
+    @app.post("/v1/reset-failures", dependencies=[Depends(v1_auth("reset"))])
     async def reset_failures():
         """Operator escape hatch: re-enable models/providers after a fixed key
         or a transient outage (usage/balance accounting is preserved)."""

@@ -377,3 +377,49 @@ class Client:
 
     def delete(self, path, **kwargs):
         return run(self.client.delete(path, **kwargs))
+
+
+def test_api_keys_store_create_list_resolve_revoke(store):
+    key, key_id = store.create_api_key("test key", "router", created_by="test")
+    assert key.startswith("wt_")
+    # prefix is the 8 hex chars after "wt_"; secret may contain underscores
+    prefix = key.split("_", 2)[1]
+    assert len(prefix) == 8
+    # list does not expose hash or secret
+    listed = store.list_api_keys()
+    assert len(listed) == 1
+    assert str(listed[0]["id"]) == key_id
+    assert listed[0]["name"] == "test key"
+    assert listed[0]["scope"] == "router"
+    assert listed[0]["prefix"] == prefix
+    assert "key_hash" not in listed[0]
+    # resolve by full key
+    resolved = store.resolve_api_key(key)
+    assert resolved is not None
+    assert str(resolved["id"]) == key_id
+    assert resolved["scope"] == "router"
+    # resolve by wrong key -> None
+    assert store.resolve_api_key("wt_" + "0" * 16 + "_wrong") is None
+    # non-wt_ tokens -> None
+    assert store.resolve_api_key("admin") is None
+    # revoke
+    assert store.revoke_api_key(key_id) is True
+    assert store.resolve_api_key(key) is None  # revoked key no longer resolves
+    assert store.revoke_api_key(key_id) is False  # already revoked
+
+
+def test_api_keys_store_expiry_and_touch(store):
+    import datetime as dt
+    key, key_id = store.create_api_key("expiring", "read", created_by="test",
+                                       expires_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1))
+    # resolves before expiry
+    assert store.resolve_api_key(key) is not None
+    # touch updates last_used_at (throttled: second call within 60s is a no-op)
+    store.touch_api_key(key_id)
+    second = store.list_api_keys()[0]["last_used_at"]
+    assert second is not None
+    # expired key (manually set far past)
+    store._conn.execute(
+        "UPDATE tracker_api_keys SET expires_at = now() - interval '1 day' WHERE id = %s",
+        (key_id,))
+    assert store.resolve_api_key(key) is None

@@ -7,6 +7,7 @@ import {
   COMMIT_LOG_FORMAT,
   CommitWatcher,
   headersWithToken,
+  normalizeRemote,
   parseCommitLog,
   parseGitState,
   requestHeaders,
@@ -40,35 +41,60 @@ async function sessionIdentity(ctx: any, sessionID: string, kind: string, agent?
   let location = ctx.location as { directory?: string; project?: { canonical?: string; directory?: string; id?: string } } | undefined
   try {
     const session = await ctx.session.get({ sessionID })
-    if (session?.location?.directory) location = { ...location, directory: session.location.directory }
+    if (session?.location?.directory) {
+      // The session's effective directory combines location.directory with an
+      // optional subpath (e.g. a session scoped to a workspace subdirectory).
+      const effectiveDir = path.resolve(session.location.directory, session.subpath ?? "")
+      location = { ...location, directory: effectiveDir }
+      base.sessionDirectory = effectiveDir
+      base.worktree = effectiveDir
+    }
   } catch {
     /* fall back to the instance location */
   }
   const directory = location?.directory
   const project = location?.project
-  if (project?.id) base.project = project.id
-  const root = project?.canonical || project?.directory
-  if (root) base.projectRoot = root
-  if (directory) {
-    base.sessionDirectory = directory
-    base.worktree = directory
-  }
-  // git identity is resolved per session directory, so `/project` switches work
-  const cwd = directory || root
+  const instanceRoot = project?.canonical || project?.directory
+  if (project?.id && !directory) base.project = project.id
+  if (instanceRoot && !directory) base.projectRoot = instanceRoot
+  const cwd = directory || instanceRoot
   if (!cwd) return base
   try {
-    const [{ stdout: head }, { stdout: branchOut }] = await Promise.all([
+    const [{ stdout: head }, { stdout: branchOut }, { stdout: gitRoot }] = await Promise.all([
       exec("git", ["rev-parse", "HEAD"], { cwd }),
       exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd }),
+      exec("git", ["rev-parse", "--show-toplevel"], { cwd }),
     ])
     base.head = head.trim() || undefined
     const branch = branchOut.trim()
     base.branch = branch && branch !== "HEAD" ? branch : undefined
-    base.repoRoot = (await exec("git", ["rev-parse", "--show-toplevel"], { cwd })).stdout.trim() || undefined
+    const root = gitRoot.trim() || undefined
+    base.repoRoot = root
+    const remote = await remoteFromGit(cwd)
+    if (remote) base.repoRemote = remote
+    if (!directory && instanceRoot && root && instanceRoot === root && project?.id) {
+      // Session is in the instance's canonical project checkout.
+      base.project = project.id
+      base.projectRoot = instanceRoot
+    } else {
+      base.projectRoot = root
+      if (!base.project) {
+        base.project = remote ? normalizeRemote(remote) : (root ? `path:${root}` : undefined)
+      }
+    }
   } catch {
     /* not a git repository: requests are tagged x-oc-no-git instead */
   }
   return base
+}
+
+async function remoteFromGit(cwd: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await exec("git", ["remote", "get-url", "origin"], { cwd })
+    return stdout.trim() || undefined
+  } catch {
+    return undefined
+  }
 }
 
 async function gitSnapshot(cwd: string): Promise<GitSnapshot | undefined> {
@@ -78,9 +104,12 @@ async function gitSnapshot(cwd: string): Promise<GitSnapshot | undefined> {
       exec("git", ["diff", "--numstat", "HEAD"], { cwd, maxBuffer: 4 * 1024 * 1024 }),
     ])
     const snapshot = parseGitState(status, numstat)
-    const head = (await exec("git", ["rev-parse", "HEAD"], { cwd })).stdout.trim()
-    snapshot.head = head || undefined
-    snapshot.repoRoot = cwd
+    const [{ stdout: head }, { stdout: gitRoot }] = await Promise.all([
+      exec("git", ["rev-parse", "HEAD"], { cwd }),
+      exec("git", ["rev-parse", "--show-toplevel"], { cwd }),
+    ])
+    snapshot.head = head.trim() || undefined
+    snapshot.repoRoot = gitRoot.trim() || cwd
     return snapshot
   } catch {
     return undefined

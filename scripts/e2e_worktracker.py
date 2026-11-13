@@ -195,6 +195,22 @@ def main() -> int:
        'id="auth-dialog"' in html and "worktracker.apiToken" in html,
        "token dialog and Authorization header wiring present")
 
+    # 7. API key management ---------------------------------------------------
+    kr = call("POST", "/worktracker/api/keys", {
+        "name": "e2e router key", "scope": "router",
+    }, ADMIN)
+    ok("create router key", bool(kr.get("key")) and kr["key"].startswith("wt_"),
+       json.dumps(kr)[:200])
+    keys = call("GET", "/worktracker/api/keys", headers=ADMIN)
+    ok("list keys", any(k["name"] == "e2e router key" for k in keys.get("keys", [])),
+       json.dumps(keys)[:200])
+    ok("key hash not exposed", all("key_hash" not in k for k in keys.get("keys", [])))
+    revoked = call("DELETE", f"/worktracker/api/keys/{kr['id']}", headers=ADMIN)
+    ok("revoke key", revoked.get("ok") is True, json.dumps(revoked)[:200])
+    keys2 = call("GET", "/worktracker/api/keys", headers=ADMIN)
+    ok("key removed from list",
+       not any(k["id"] == kr["id"] for k in keys2.get("keys", [])))
+
     failed = [name for name, passed in checks if not passed]
     print(f"\n{len(checks) - len(failed)}/{len(checks)} E2E checks passed against {BASE}")
     return 1 if failed else 0
