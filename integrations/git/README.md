@@ -10,9 +10,9 @@ curl -fsSL https://raw.githubusercontent.com/besteFinanzen/custom-llm-auto-route
 The installer asks on `/dev/tty` (so it works through `curl | sh`) for:
 
 1. the tracker URL, e.g. `https://ai.example.com`
-2. a hook token — create one with `TRACKER_HOOK_TOKEN` in the router's `.env`
+2. a hook token — generate one with scope `hook` (or `editor`/`admin`) in the tracker UI → API Keys; `TRACKER_HOOK_TOKEN` in `.env` still works
 
-It validates the credential against `POST /worktracker/api/whoami`, then writes:
+It validates the credential against `GET /worktracker/api/whoami`, then writes:
 
 - `.git/worktracker.env` (mode `0600`) with the URL and token — never committed
 - `.git/hooks/post-commit` — a marker-delimited block appended to any existing hook
