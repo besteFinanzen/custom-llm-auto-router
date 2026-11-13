@@ -981,7 +981,7 @@ views.keys = async () => {
       td(k.last_used_at ? when(k.last_used_at) : "—", "muted") +
       td(status) +
       td('<button class="btn small" data-revoke="' + esc(k.id) + '">Revoke</button>');
-  }).join("");
+    });
   const wrap = h('<div><h1>API Keys</h1>' +
     '<div class="row" style="margin-bottom:14px"><span class="right"><button class="btn primary" id="newkey">Create key</button></span></div>' +
     '<div class="panel">' + table(["Name", "Scope", "Created", "Last used", "Status", ""], rows, "No keys yet") + "</div>" +
