@@ -87,7 +87,7 @@ required alongside the application when `DATABASE_URL` points elsewhere.
 
 | Preset | Cost ceiling (blended $/1M) | Floors | Best for |
 |---|---|---|---|
-| `low` | 0 (free only) | 32k ctx | aux calls, trivial work |
+| `low` | 0 (free only) | 200k ctx | aux calls, trivial work |
 | `medium` | 0.60 | 131k ctx, tools | everyday coding |
 | `high` | 5.00 | 131k ctx, tools | hard problems |
 | `orchestrator` | 5.00 | 200k ctx, tools, agentic-weighted | primary agent that spawns subagents |

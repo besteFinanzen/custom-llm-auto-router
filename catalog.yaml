@@ -84,7 +84,7 @@ providers:
 presets:
   low:          # aux calls (title/compaction) and cheap work
     max_cost: 0.0
-    min_context: 32768
+    min_context: 200000        # every free model that wins traffic has >=200k
     require_tools: false
     weights: {aa_intelligence: 0.35, aa_coding: 0.25, aa_agentic: 0.10, oc_retention: 0.20, oc_popularity: 0.10}
   medium:
