@@ -68,6 +68,11 @@
   <div class="right">
     <nav><a href="/dashboard">live</a><a class="active" href="/dashboard/history">history</a></nav>
     <span class="muted" id="updated">connecting…</span>
+    <div id="token-prompt" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--muted)">
+      <label>API token</label>
+      <input id="api-token" type="password" placeholder="paste bearer token" style="font-size:11px;padding:2px 6px">
+      <button id="token-save" style="font-size:11px;padding:2px 8px">save</button>
+    </div>
     <button id="refresh">refresh</button>
   </div>
 </header>
@@ -172,6 +177,14 @@ const metricText = (v, metric) => metric === 'cost' ? money(v) : metric === 'req
 const metricLabel = {tokens:'tokens/day', input:'input tokens/day', output:'output tokens/day', cost:'spend/day', requests:'requests/day'};
 const metricColor = {tokens:'#58a6ff', input:'#58a6ff', output:'#3fb950', cost:'#d29922', requests:'#bc8cff'};
 let days = 90, metric = 'tokens', project = '', lastData = null, loading = false;
+let apiToken = sessionStorage.getItem('history.apiToken') || '';
+
+function applyToken() {
+  const el = $('#token-prompt');
+  if (el) el.style.display = apiToken ? 'none' : 'flex';
+  const input = $('#api-token');
+  if (input) input.value = '';
+}
 
 function barRow(label, sub, value, max, color, right) {
   const pct = max > 0 ? Math.max(value > 0 ? 2 : 0, Math.round(value / max * 100)) : 0;
@@ -311,7 +324,15 @@ async function load() {
   loading = true;
   try {
     const q = new URLSearchParams({days: String(days), metric, project});
-    const r = await fetch('/v1/history?' + q.toString(), {cache:'no-store'});
+    const headers = {'Cache-Control': 'no-store'};
+    if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
+    const r = await fetch('/v1/history?' + q.toString(), {headers});
+    if (r.status === 401) {
+      apiToken = '';
+      sessionStorage.removeItem('history.apiToken');
+      applyToken();
+      throw new Error('unauthorized');
+    }
     if (!r.ok) {
       let detail = r.status;
       try { detail = (await r.json()).detail || detail; } catch (_) {}
@@ -340,6 +361,18 @@ $('#project').onchange = e => { project = e.target.value; load(); };
 $('#refresh').onclick = load;
 load();
 setInterval(load, 15000);
+
+$('#token-save').onclick = () => {
+  const input = $('#api-token');
+  apiToken = (input.value || '').trim();
+  if (apiToken) {
+    sessionStorage.setItem('history.apiToken', apiToken);
+    input.value = '';
+    applyToken();
+    load();
+  }
+};
+applyToken();
 </script>
 </body>
 </html>
