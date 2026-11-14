@@ -7,6 +7,7 @@ config parsing, payload building, queueing during outages and flushing.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -97,6 +98,46 @@ def write_env(repo: pathlib.Path, url: str, token: str = "hook-token",
     path.write_text(f"WORKTRACKER_URL={url}\nWORKTRACKER_TOKEN={token}\n"
                     f"WORKTRACKER_DEVICE={device}\n")
     return path
+
+
+class FakeTerminal:
+    """Enough of /dev/tty for the wizard: queued answers and captured output."""
+
+    def __init__(self, answers: list[str]) -> None:
+        self.answers = list(answers)
+        self.written: list[str] = []
+        self.closed = False
+
+    def write(self, text: str) -> None:
+        self.written.append(text)
+
+    def flush(self) -> None:
+        pass
+
+    def readline(self) -> str:
+        return self.answers.pop(0) + "\n" if self.answers else ""
+
+    def close(self) -> None:
+        self.closed = True
+
+    @property
+    def output(self) -> str:
+        return "".join(self.written)
+
+
+def attach_terminal(monkeypatch, answers: list[str],
+                    secrets: list[str] | None = None) -> FakeTerminal:
+    """Patch the wizard's terminal and its hidden-input prompt."""
+    terminal = FakeTerminal(answers)
+    pending = list(secrets or [])
+
+    def read_secret(_label: str, _stream) -> str:
+        assert pending, "the wizard asked for more secrets than the test supplied"
+        return pending.pop(0)
+
+    monkeypatch.setattr(hook, "open", lambda *a, **k: terminal, raising=False)
+    monkeypatch.setattr(hook, "_read_secret", read_secret)
+    return terminal
 
 
 @pytest.fixture(autouse=True)
@@ -251,6 +292,19 @@ def test_installer_script_runs_without_tty_when_credentials_supplied(repo):
     assert (gd / "hooks" / "post-commit.d" / "post_commit.py").exists()
 
 
+def test_installer_script_accepts_install_word(repo):
+    """`sh install-hook.sh install` is a natural way to invoke it; accept it."""
+    script = ROOT / "integrations" / "git" / "install-hook.sh"
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(repo),
+           "WORKTRACKER_URL": "http://127.0.0.1:9", "WORKTRACKER_TOKEN": "abc"}
+    result = subprocess.run(["sh", str(script), "install"], cwd=repo, env=env,
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            timeout=60)
+    assert result.returncode == 0, result.stderr
+    gd = hook.git_dir(str(repo))
+    assert (gd / "hooks" / "post-commit.d" / "post_commit.py").exists()
+
+
 def test_install_falls_back_to_env_and_prompt(repo, monkeypatch):
     monkeypatch.setenv("WORKTRACKER_URL", "http://env-host/")
     monkeypatch.setenv("WORKTRACKER_TOKEN", "env-token")
@@ -260,13 +314,182 @@ def test_install_falls_back_to_env_and_prompt(repo, monkeypatch):
     assert env["WORKTRACKER_TOKEN"] == "env-token"
 
 
+def deny_terminal(monkeypatch) -> None:
+    """Simulate a shell with neither /dev/tty nor a terminal on stdin."""
+    class NoStdin:
+        def isatty(self) -> bool:
+            return False
+
+    monkeypatch.setattr(hook, "open", lambda *a, **k: (_ for _ in ()).throw(OSError()),
+                        raising=False)
+    monkeypatch.setattr(hook.sys, "stdin", NoStdin())
+
+
 def test_prompt_without_tty_exits(repo, monkeypatch):
     monkeypatch.delenv("WORKTRACKER_URL", raising=False)
     monkeypatch.delenv("WORKTRACKER_TOKEN", raising=False)
-    monkeypatch.setattr(hook, "open", lambda *a, **k: (_ for _ in ()).throw(OSError()),
-                        raising=False)
+    deny_terminal(monkeypatch)
     with pytest.raises(SystemExit, match="no terminal"):
         hook.install(str(repo), prompt=True)
+
+
+def test_install_without_tty_reuses_saved_credentials(repo, monkeypatch):
+    write_env(repo, "http://tracker:4141", token="saved-token", device="desk")
+    deny_terminal(monkeypatch)
+
+    target = hook.install(str(repo), prompt=True)
+
+    assert target.exists()
+    env = hook.parse_env(hook.git_dir(str(repo)) / "worktracker.env")
+    assert env["WORKTRACKER_TOKEN"] == "saved-token"
+    assert env["WORKTRACKER_DEVICE"] == "desk"
+
+
+def test_interactive_without_tty_still_exits(repo, monkeypatch):
+    write_env(repo, "http://tracker:4141", token="saved-token")
+    deny_terminal(monkeypatch)
+    with pytest.raises(SystemExit, match="no terminal"):
+        hook.install(str(repo), prompt=True, interactive=True)
+
+
+def test_console_falls_back_to_stdin_when_dev_tty_is_missing(monkeypatch):
+    """IDEs and containers can hand us a terminal on stdin without /dev/tty."""
+    class TerminalStdin(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+        def fileno(self) -> int:
+            return 0
+
+    out = io.StringIO()
+    monkeypatch.setattr(hook, "open", lambda *a, **k: (_ for _ in ()).throw(OSError()),
+                        raising=False)
+    monkeypatch.setattr(hook.sys, "stdin", TerminalStdin("mac\n"))
+    monkeypatch.setattr(hook.sys, "stdout", out)
+
+    with hook._open_console() as console:
+        assert console.ask("device") == "mac"
+
+    assert out.getvalue() == "device: "
+    assert not out.closed
+
+
+def test_normalize_url_accepts_hosts_and_strips_api_paths():
+    assert hook._normalize_url("ai.example.com/") == "https://ai.example.com"
+    assert hook._normalize_url("https://ai.example.com/worktracker/api/") == \
+        "https://ai.example.com"
+    assert hook._normalize_url("https://ai.example.com/tracker/worktracker") == \
+        "https://ai.example.com/tracker"
+    assert hook._normalize_url("http://ai.example.com:4141/ai") == \
+        "http://ai.example.com:4141/ai"
+    for bad in ("", "ftp://tracker", "https://", "https://x/?q=1", "not a url"):
+        with pytest.raises(ValueError):
+            hook._normalize_url(bad)
+
+
+def test_wizard_prefills_saved_values_and_confirms(repo, server, monkeypatch):
+    url = f"http://127.0.0.1:{server.server_port}"
+    write_env(repo, url, token="saved-token", device="desk")
+    terminal = attach_terminal(monkeypatch, answers=["", "", "yes"], secrets=[""])
+
+    target = hook.install(str(repo), prompt=True)
+
+    assert "Worktracker git hook setup" in terminal.output
+    assert "Install summary" in terminal.output
+    assert "saved-token" not in terminal.output  # the token stays masked
+    assert target.exists()
+    env = hook.parse_env(hook.git_dir(str(repo)) / "worktracker.env")
+    assert env == {"WORKTRACKER_URL": url, "WORKTRACKER_TOKEN": "saved-token",
+                   "WORKTRACKER_DEVICE": "desk"}
+
+
+def test_wizard_reprompts_invalid_url(repo, server, monkeypatch):
+    url = f"http://127.0.0.1:{server.server_port}"
+    terminal = attach_terminal(monkeypatch, answers=["ftp://tracker", url, "", "y"],
+                               secrets=["tok"])
+
+    hook.install(str(repo), prompt=True)
+
+    assert "start with http:// or https://" in terminal.output
+    assert hook.parse_env(hook.git_dir(str(repo)) / "worktracker.env")[
+        "WORKTRACKER_URL"] == url
+    assert server.calls[0]["auth"] == "Bearer tok"  # type: ignore[attr-defined]
+
+
+def test_wizard_retries_rejected_token(repo, server, monkeypatch):
+    url = f"http://127.0.0.1:{server.server_port}"
+    server.responses = [401, 200]  # type: ignore[attr-defined]
+    terminal = attach_terminal(monkeypatch, answers=[url, "", "y"],
+                               secrets=["bad", "good"])
+
+    hook.install(str(repo), prompt=True)
+
+    assert "token rejected (HTTP 401)" in terminal.output
+    env = hook.parse_env(hook.git_dir(str(repo)) / "worktracker.env")
+    assert env["WORKTRACKER_TOKEN"] == "good"
+    whoami = [c for c in server.calls if c["path"].endswith("/whoami")]  # type: ignore[attr-defined]
+    assert [c["auth"] for c in whoami] == ["Bearer bad", "Bearer good"]
+
+
+def test_wizard_aborts_after_three_rejections(repo, server, monkeypatch):
+    url = f"http://127.0.0.1:{server.server_port}"
+    server.responses = [401, 401, 401]  # type: ignore[attr-defined]
+    attach_terminal(monkeypatch, answers=[url], secrets=["a", "b", "c"])
+
+    with pytest.raises(SystemExit, match="credential rejected"):
+        hook.install(str(repo), prompt=True)
+
+    gd = hook.git_dir(str(repo))
+    assert not (gd / "worktracker.env").exists()
+    assert not (gd / "hooks" / "post-commit").exists()
+
+
+def test_wizard_can_continue_when_tracker_is_unreachable(repo, monkeypatch):
+    attach_terminal(monkeypatch, answers=["http://127.0.0.1:9", "n"], secrets=["tok"])
+    with pytest.raises(SystemExit, match="tracker unreachable"):
+        hook.install(str(repo), prompt=True)
+    assert not (hook.git_dir(str(repo)) / "worktracker.env").exists()
+
+    attach_terminal(monkeypatch, answers=["http://127.0.0.1:9", "y", "", "y"],
+                    secrets=["tok"])
+    hook.install(str(repo), prompt=True)
+    assert hook.parse_env(hook.git_dir(str(repo)) / "worktracker.env")[
+        "WORKTRACKER_DEVICE"] == hook.default_device()
+
+
+def test_wizard_declining_confirmation_writes_nothing(repo, server, monkeypatch):
+    url = f"http://127.0.0.1:{server.server_port}"
+    hooks = hook.git_dir(str(repo)) / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    existing = hooks / "post-commit"
+    existing.write_text("#!/bin/sh\necho keep\n")
+    attach_terminal(monkeypatch, answers=[url, "", "n"], secrets=[""])
+
+    with pytest.raises(SystemExit, match="nothing installed"):
+        hook.install(str(repo), prompt=True)
+
+    assert existing.read_text() == "#!/bin/sh\necho keep\n"
+    assert not (hook.git_dir(str(repo)) / "worktracker.env").exists()
+    assert not pathlib.Path(f"{existing}.d").exists()
+
+
+def test_interactive_flag_reviews_saved_config(repo, server, monkeypatch):
+    url = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setenv("WORKTRACKER_URL", url)
+    monkeypatch.setenv("WORKTRACKER_TOKEN", "env-token")
+    terminal = attach_terminal(monkeypatch, answers=["", "", "", "y"], secrets=[""])
+
+    hook.install(str(repo), prompt=True, interactive=True)
+
+    assert "Install summary" in terminal.output
+    assert hook.parse_env(hook.git_dir(str(repo)) / "worktracker.env")[
+        "WORKTRACKER_TOKEN"] == "env-token"
+
+
+def test_main_install_no_prompt_requires_credentials(repo, capsys, monkeypatch):
+    monkeypatch.chdir(repo)
+    assert hook.main(["hook", "install", "--no-prompt"]) == 2
+    assert "missing credentials" in capsys.readouterr().err
 
 
 def test_main_commands(repo, server, capsys, monkeypatch, tmp_path):

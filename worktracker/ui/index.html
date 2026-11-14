@@ -953,7 +953,7 @@ views.settings = async () => {
     "</div></div>"));
   p.appendChild(h('<div class="panel"><h2>Setup</h2><ol>' +
     "<li><b>OpenCode</b>: install the router-tags plugin from <span class=\"mono\">integrations/opencode</span>; it sends git/device/tool/job headers and snapshots automatically.</li>" +
-    "<li><b>Git hook (optional)</b>: <span class=\"mono\">curl -fsSL …/integrations/git/install-hook.sh | sh</span> inside a repo; it prompts for a token and queues commits if the server is offline.</li>" +
+    "<li><b>Git hook (optional)</b>: <span class=\"mono\">curl -fsSL …/integrations/git/install-hook.sh | sh</span> inside a repo; the wizard validates the token before installing and queues commits if the server is offline.</li>" +
     "<li><b>VS Code</b>: install the official WakaTime extension, set API URL <span class=\"mono\">" + esc(cfg.public_url || location.origin) + "</span> and use your editor key as the API key.</li>" +
     "</ol></div>"));
   wrap.querySelector("#dorefresh").onclick = async () => {

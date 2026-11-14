@@ -166,9 +166,10 @@ python -m worktracker status       # connectivity check + row counts (JSON)
 1. **OpenCode plugin** — install `integrations/opencode/plugins/router-tags`
    (see its README). It adds session, project, worktree and job headers to every
    routed request, so usage is attributed to the right project automatically.
-2. **Git hook (optional)** — install the stdlib `post-commit` hook, which prompts
-   for the tracker URL and token, validates them, and stores the token in
-   `.git/worktracker.env` (mode `0600`):
+2. **Git hook (optional)** — install the stdlib `post-commit` hook with an
+   interactive wizard that pre-fills saved values, validates the tracker URL and
+   token before writing, and stores the token in `.git/worktracker.env`
+   (mode `0600`):
 
    ```bash
    curl -fsSL https://raw.githubusercontent.com/besteFinanzen/custom-llm-auto-router/feat/worktracker/integrations/git/install-hook.sh | sh
@@ -178,7 +179,7 @@ python -m worktracker status       # connectivity check + row counts (JSON)
    `TRACKER_PUBLIC_URL` at `https://<domain>` so the installer prints the exact
    command for your deployment.)
 
-   See `integrations/git/README.md` for `--dry-run`, `--uninstall`, and the
+   See `integrations/git/README.md` for `--interactive`, `--no-prompt`, and the
    non-interactive `--url` / `--token` flags.
 3. **VS Code** — point the official WakaTime extension at `https://<domain>/api/v1`
    with a tracker token. Heartbeats feed presence, heatmaps and time accounting.

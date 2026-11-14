@@ -6,6 +6,13 @@ Invocations:
   worktracker_hook.py flush        retry queued commits
   worktracker_hook.py status       show configuration and queue size
 
+`install` is interactive when the URL or token is missing: it pre-fills saved
+values, validates the credential before writing anything, and asks for
+confirmation. Scripts can skip the prompts:
+
+  install --url https://ai.example.com --token wt_hook_... --no-prompt
+  install --interactive    # always review the wizard, even with saved values
+
 The hook reads `$GIT_DIR/worktracker.env` (mode 0600) for the tracker URL and
 token. Anything it cannot deliver is appended to `$GIT_DIR/worktracker-queue.jsonl`
 and retried on the next commit, so a router outage never blocks a commit.
@@ -14,6 +21,7 @@ Only stdlib is used, so the installer can drop this single file anywhere.
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import pathlib
@@ -24,9 +32,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import TextIO, cast
 
 TIMEOUT = 8
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 DEFAULT_MARKER = "# >>> worktracker hook >>>"
 
 
@@ -60,12 +69,16 @@ def parse_env(path: pathlib.Path) -> dict[str, str]:
     return values
 
 
+def default_device() -> str:
+    return os.uname().nodename if hasattr(os, "uname") else "unknown"
+
+
 def tracker_config(cwd: str | None = None) -> dict[str, str]:
     values = parse_env(git_dir(cwd) / "worktracker.env")
     values.update({k: v for k, v in os.environ.items() if k.startswith("WORKTRACKER_")})
     url = os.environ.get("WORKTRACKER_URL") or values.get("WORKTRACKER_URL", "")
     token = os.environ.get("WORKTRACKER_TOKEN") or values.get("WORKTRACKER_TOKEN", "")
-    device = values.get("WORKTRACKER_DEVICE") or os.uname().nodename if hasattr(os, "uname") else "unknown"
+    device = values.get("WORKTRACKER_DEVICE") or default_device()
     return {"url": url.rstrip("/"), "token": token, "device": device}
 
 
@@ -89,8 +102,8 @@ def request(base: str, token: str, path: str, payload: dict | None = None,
         except Exception:
             body = {}
         return exc.code, body
-    except (urllib.error.URLError, OSError):
-        # tracker unreachable: caller queues and retries on the next commit
+    except (urllib.error.URLError, OSError, ValueError):
+        # tracker unreachable (or a malformed URL): callers queue and retry
         return 0, {}
 
 
@@ -258,13 +271,233 @@ fi
 """
 
 
-def install(cwd: str | None = None, url: str = "", token: str = "", prompt: bool = True,
-            device: str | None = None) -> pathlib.Path:
-    gd = git_dir(cwd)
-    url = url or os.environ.get("WORKTRACKER_URL", "")
-    token = token or os.environ.get("WORKTRACKER_TOKEN", "")
-    if prompt and (not url or not token):
-        url, token = _prompt(url, token)
+_LAST_CHECK: tuple[int, dict] | None = None
+
+
+class _Console:
+    """Prompt on the controlling terminal, so `curl | sh` keeps working."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self.stream = stream
+
+    def __enter__(self) -> _Console:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stream.close()
+
+    def say(self, text: str = "") -> None:
+        self.stream.write(text + "\n")
+        self.stream.flush()
+
+    def ask(self, label: str, default: str = "") -> str:
+        suffix = f" [{default}]" if default else ""
+        self.stream.write(f"{label}{suffix}: ")
+        self.stream.flush()
+        line = self.stream.readline()
+        if line == "":
+            raise SystemExit("cancelled")
+        return line.strip() or default
+
+    def secret(self, label: str, default: str = "") -> str:
+        suffix = " [keep the saved token]" if default else ""
+        try:
+            value = _read_secret(f"{label}{suffix}: ", self.stream)
+        except EOFError:
+            raise SystemExit("cancelled") from None
+        return value.strip() or default
+
+    def confirm(self, label: str, default: bool = True) -> bool:
+        hint = "[Y/n]" if default else "[y/N]"
+        self.stream.write(f"{label} {hint} ")
+        self.stream.flush()
+        line = self.stream.readline()
+        if line == "":
+            raise SystemExit("cancelled")
+        answer = line.strip().lower()
+        if not answer:
+            return default
+        return answer in ("y", "yes")
+
+
+def _read_secret(label: str, stream: TextIO) -> str:
+    """Separate hook for tests: getpass reads the real terminal, not stdin."""
+    return getpass.getpass(label, stream=stream)
+
+
+class _NoTerminal(Exception):
+    """Raised when /dev/tty exists but this process has no controlling terminal."""
+
+
+class _StdioStream:
+    """Read stdin and write stdout when the process has no controlling TTY."""
+
+    def readline(self) -> str:
+        return sys.stdin.readline()
+
+    def write(self, text: str) -> int:
+        return sys.stdout.write(text)
+
+    def flush(self) -> None:
+        sys.stdout.flush()
+
+    def close(self) -> None:
+        pass
+
+    def fileno(self) -> int:
+        # getpass uses this to disable echo on the real terminal.
+        return sys.stdin.fileno()
+
+
+def _open_console() -> _Console:
+    stream: TextIO
+    try:
+        stream = open("/dev/tty", "r+")  # noqa: SIM115 - closed by _Console
+    except OSError:
+        # Some sandboxes and IDE task runners give the process a terminal on
+        # stdin but no controlling TTY, so /dev/tty is unopenable.
+        try:
+            interactive_stdin = sys.stdin.isatty()
+        except (OSError, ValueError):
+            interactive_stdin = False
+        if not interactive_stdin:
+            raise _NoTerminal() from None
+        stream = cast(TextIO, _StdioStream())
+    return _Console(stream)
+
+
+def _normalize_url(raw: str) -> str:
+    """Accept a bare host, strip a pasted API path, and reject nonsense."""
+    value = raw.strip()
+    if not value:
+        raise ValueError("a tracker URL is required")
+    if "://" not in value:
+        value = "https://" + value
+    if any(char.isspace() for char in value):
+        raise ValueError("the URL must not contain spaces")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("start with http:// or https://")
+    if not parsed.netloc:
+        raise ValueError("include a host, e.g. https://ai.example.com")
+    if parsed.query or parsed.fragment:
+        raise ValueError("drop the ?query or #fragment part")
+    path = parsed.path.rstrip("/")
+    for suffix in ("/worktracker/api", "/worktracker"):
+        if path.endswith(suffix):
+            path = path[:-len(suffix)]
+            break
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _mask_secret(token: str) -> str:
+    if not token:
+        return "(none - open tracker)"
+    if len(token) <= 10:
+        return "*" * len(token)
+    return f"{token[:4]}...{token[-4:]}"
+
+
+def _hook_note(target: pathlib.Path) -> str:
+    if not target.exists():
+        return f"create {target}"
+    if DEFAULT_MARKER in target.read_text():
+        return f"update the Worktracker block in {target}"
+    return f"append to the existing hook in {target}"
+
+
+def _wizard(gd: pathlib.Path, cwd: str | None, url: str, token: str,
+            device: str | None) -> tuple[str, str, str, tuple[int, dict]]:
+    """Guided setup: defaults, validation with retry, then one confirmation."""
+    saved = parse_env(gd / "worktracker.env")
+    url = url or saved.get("WORKTRACKER_URL", "")
+    token = token or saved.get("WORKTRACKER_TOKEN", "")
+    if device is None:
+        device = saved.get("WORKTRACKER_DEVICE", "") or default_device()
+    try:
+        root = git("rev-parse", "--show-toplevel", cwd=cwd).strip()
+    except RuntimeError:
+        root = cwd or os.getcwd()
+    try:
+        remote = git("config", "--get", "remote.origin.url", cwd=cwd).strip()
+    except RuntimeError:
+        remote = ""
+    target = gd / "hooks" / "post-commit"
+    note = _hook_note(target)
+
+    with _open_console() as console:
+        console.say("Worktracker git hook setup")
+        console.say(f"  repository: {root}")
+        console.say(f"  project:    {_project_key(remote, root)}")
+        console.say(f"  hook:       {note}")
+        console.say()
+
+        while True:
+            try:
+                url = _normalize_url(
+                    console.ask("Tracker URL (e.g. https://ai.example.com)", url))
+                break
+            except ValueError as exc:
+                console.say(f"  ! {exc}")
+
+        token = console.secret("Hook token (scope hook)", token)
+        if not token:
+            console.say("  no token: this only works where tracker auth is disabled")
+
+        status: int = 0
+        body: dict[str, object] = {}
+        rejected = 0
+        while True:
+            console.say("Checking the credential...")
+            status, body = request(url, token, "whoami", method="GET")
+            if 200 <= status < 300:
+                who = str(body.get("scope", "?"))
+                if body.get("name"):
+                    who += f", {body['name']}"
+                console.say(f"  authenticated as {who}")
+                break
+            if status in (401, 403):
+                rejected += 1
+                if rejected >= 3:
+                    raise SystemExit(
+                        f"credential rejected by {url} (HTTP {status}); nothing installed")
+                console.say(f"  ! token rejected (HTTP {status})")
+                token = console.secret("Hook token (scope hook)")
+                while not token:
+                    console.say("  a hook token is required: tracker UI -> API Keys")
+                    token = console.secret("Hook token (scope hook)")
+                continue
+            if status == 0:
+                console.say(f"  ! {url} is unreachable from here")
+                if console.confirm(
+                        "Install anyway? Commits will be queued until it is reachable", True):
+                    break
+                raise SystemExit("aborted: tracker unreachable; nothing installed")
+            console.say(f"  ! the credential check returned HTTP {status}")
+            if console.confirm("Install anyway?", False):
+                break
+            raise SystemExit(
+                f"aborted: credential check failed (HTTP {status}); nothing installed")
+
+        device = console.ask("Device name", device) or default_device()
+
+        console.say()
+        console.say("Install summary")
+        console.say(f"  repository: {root}")
+        console.say(f"  tracker:    {url}")
+        token_line = _mask_secret(token)
+        if body.get("scope"):
+            token_line += f" (scope {body['scope']})"
+        console.say(f"  token:      {token_line}")
+        console.say(f"  device:     {device}")
+        console.say(f"  hook:       {note}")
+        if not console.confirm("Install these?", True):
+            raise SystemExit("aborted: nothing installed")
+    return url, token, device, (status, body)
+
+
+def _write_install(gd: pathlib.Path, url: str, token: str,
+                   device: str | None) -> pathlib.Path:
     if device is None:
         # Keep a device name already configured by an earlier install.
         device = parse_env(gd / "worktracker.env").get("WORKTRACKER_DEVICE", "")
@@ -292,27 +525,42 @@ def install(cwd: str | None = None, url: str = "", token: str = "", prompt: bool
     return target
 
 
-def _prompt(url: str, token: str) -> tuple[str, str]:
-    """Ask on /dev/tty so the installer keeps working through `curl | sh`."""
-    try:
-        tty = open("/dev/tty", "r+")  # noqa: SIM115 - interactive prompt
-    except OSError:
-        raise SystemExit("no terminal available: pass --url and --token") from None
-    with tty:
-        if not url:
-            tty.write("Tracker URL (e.g. https://ai.example.com): ")
-            tty.flush()
-            url = tty.readline().strip()
-        if not token:
-            import getpass
-
-            token = getpass.getpass("Tracker hook token: ", stream=tty).strip()
-    return url.rstrip("/"), token
+def install(cwd: str | None = None, url: str = "", token: str = "", prompt: bool = True,
+            device: str | None = None, interactive: bool = False) -> pathlib.Path:
+    global _LAST_CHECK
+    _LAST_CHECK = None
+    gd = git_dir(cwd)
+    url = url or os.environ.get("WORKTRACKER_URL", "")
+    token = token or os.environ.get("WORKTRACKER_TOKEN", "")
+    if prompt and (interactive or not url or not token):
+        try:
+            url, token, device, _LAST_CHECK = _wizard(gd, cwd, url, token, device)
+        except _NoTerminal:
+            # Re-running in a container/CI with saved credentials must keep
+            # working; a forced --interactive still needs a real terminal.
+            saved = parse_env(gd / "worktracker.env")
+            saved_url = saved.get("WORKTRACKER_URL", "")
+            saved_token = saved.get("WORKTRACKER_TOKEN", "")
+            if interactive or not saved_url or not saved_token:
+                raise SystemExit(
+                    "no terminal available: this shell has no controlling TTY\n"
+                    "(`test -t 0` fails here). Run the installer from an\n"
+                    "interactive terminal, or pass --url and --token (or set\n"
+                    "WORKTRACKER_URL/WORKTRACKER_TOKEN).") from None
+            url, token = saved_url, saved_token
+            device = device or saved.get("WORKTRACKER_DEVICE", "")
+    elif not url or not token:
+        raise SystemExit("missing credentials: pass --url and --token or set "
+                         "WORKTRACKER_URL/WORKTRACKER_TOKEN")
+    return _write_install(gd, url, token, device)
 
 
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "post-commit"
     args = dict(zip(argv[2::2], argv[3::2], strict=False))
+    if command in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
     if command == "version":
         print(f"worktracker hook {__version__}")
         return 0
@@ -322,12 +570,29 @@ def main(argv: list[str]) -> int:
         print(f"delivered {flush()} queued commits")
         return 0
     if command == "install":
+        if "--help" in argv or "-h" in argv:
+            print(__doc__)
+            return 0
+        prompt = "--no-prompt" not in argv
+        if not prompt:
+            url = args.get("--url", "") or os.environ.get("WORKTRACKER_URL", "")
+            token = args.get("--token", "") or os.environ.get("WORKTRACKER_TOKEN", "")
+            if not url or not token:
+                print("missing credentials: pass --url and --token or set "
+                      "WORKTRACKER_URL/WORKTRACKER_TOKEN", file=sys.stderr)
+                return 2
         target = install(url=args.get("--url", ""), token=args.get("--token", ""),
-                         prompt="--no-prompt" not in argv)
-        config = tracker_config()
-        status, body = request(config["url"], config["token"], "whoami", method="GET")
+                         prompt=prompt, interactive="--interactive" in argv)
+        if _LAST_CHECK is not None:
+            status, body = _LAST_CHECK
+        else:
+            config = tracker_config()
+            status, body = request(config["url"], config["token"], "whoami", method="GET")
         if 200 <= status < 300:
             print(f"hook installed at {target} (authenticated as {body.get('scope', '?')})")
+        elif status == 0:
+            print(f"hook installed at {target}, but the tracker was unreachable; "
+                  "commits will be queued")
         else:
             print(f"hook installed at {target}, but the credential check failed: HTTP {status}")
         return 0
@@ -342,4 +607,8 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        print("cancelled", file=sys.stderr)
+        sys.exit(130)

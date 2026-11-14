@@ -196,8 +196,9 @@ python -m worktracker keys revoke <id>                                 # revoke 
 ```
 
 Tracking is plugin-first (OpenCode plugin tags each request with session,
-project, device, tool and job identity); `sh integrations/git/install-hook.sh`
-adds an optional stdlib `post-commit` hook that never blocks a commit and queues
+project, device, tool and job identity); an interactive
+`sh integrations/git/install-hook.sh` adds an optional stdlib `post-commit` hook
+that validates the token before writing, never blocks a commit and queues
 reports during outages. VS Code uses the WakaTime-compatible API at
 `https://<host>/api/v1`.
 
