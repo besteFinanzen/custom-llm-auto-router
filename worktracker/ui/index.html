@@ -938,7 +938,7 @@ views.jobs = async () => {
 
 // ---------------------------------------------------------------- settings / docs
 views.settings = async () => {
-  const [cfg, refresh, status] = await Promise.all([api("/config"), api("/refresh"), fetch("/v1/status").then(r => r.ok ? r.json() : null).catch(() => null)]);
+  const [cfg, refresh, status] = await Promise.all([api("/config"), api("/refresh"), fetch("/v1/status", {headers: authToken ? {"Authorization": "Bearer " + authToken} : {}}).then(r => r.ok ? r.json() : null).catch(() => null)]);
   const wrap = h('<div><h1>Settings and setup</h1><div class="grid" id="p"></div></div>');
   const p = wrap.querySelector("#p");
   const rows = Object.entries(cfg || {}).map(([k, v]) => "<tr>" + td(esc(k)) + td('<span class="mono">' + esc(String(v)) + "</span>") + "</tr>");

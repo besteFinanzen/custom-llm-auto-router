@@ -92,6 +92,11 @@
   <div class="right">
     <nav aria-label="Dashboard"><a class="active" href="/dashboard" aria-current="page">live</a><a href="/dashboard/history">history &amp; projects</a></nav>
     <span class="muted" id="updated">connecting…</span>
+    <div id="token-prompt" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--muted)">
+      <label>API token</label>
+      <input id="api-token" type="password" placeholder="paste bearer token" style="font-size:11px;padding:2px 6px">
+      <button id="token-save" style="font-size:11px;padding:2px 8px">save</button>
+    </div>
     <button id="pause">pause</button>
   </div>
 </header>
@@ -183,6 +188,14 @@ const clock = ts => {
 const shortSession = s => (!s || s === '(unknown)') ? '(unknown)' : (s.length > 14 ? s.slice(0, 14) + '…' : s);
 let sessionFilter = null;
 let lastData = null;
+let apiToken = sessionStorage.getItem('dashboard.apiToken') || '';
+
+function applyToken() {
+  const el = $('#token-prompt');
+  if (el) el.style.display = apiToken ? 'none' : 'flex';
+  const input = $('#api-token');
+  if (input) input.value = '';
+}
 
 function barRow(label, sub, value, max, color, right) {
   const pct = max > 0 ? Math.max(2, Math.round(value / max * 100)) : 0;
@@ -464,7 +477,15 @@ function online(on) {
 async function tick() {
   if (paused) return;
   try {
-    const r = await fetch('/v1/spend', {cache: 'no-store'});
+    const headers = {'Cache-Control': 'no-store'};
+    if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
+    const r = await fetch('/v1/spend', {headers});
+    if (r.status === 401) {
+      apiToken = '';
+      sessionStorage.removeItem('dashboard.apiToken');
+      applyToken();
+      throw new Error('unauthorized');
+    }
     if (!r.ok) throw new Error(r.status);
     render(await r.json());
     online(true);
@@ -479,8 +500,20 @@ $('#pause').onclick = () => {
   if (!paused) tick();
 };
 
+$('#token-save').onclick = () => {
+  const input = $('#api-token');
+  apiToken = (input.value || '').trim();
+  if (apiToken) {
+    sessionStorage.setItem('dashboard.apiToken', apiToken);
+    input.value = '';
+    applyToken();
+    tick();
+  }
+};
+
 tick();
 setInterval(tick, 2000);
+applyToken();
 </script>
 </body>
 </html>
