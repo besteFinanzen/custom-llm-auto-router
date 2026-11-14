@@ -66,7 +66,8 @@ class Collector(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}") if length else {}
         self.server.calls.append({  # type: ignore[attr-defined]
             "method": self.command, "path": self.path, "body": body,
-            "auth": self.headers.get("authorization")})
+            "auth": self.headers.get("authorization"),
+            "user_agent": self.headers.get("user-agent")})
         status = self.server.responses.pop(0) if self.server.responses else 200  # type: ignore[attr-defined]
         data = json.dumps({"ok": status == 200, "scope": "hook"}).encode()
         self.send_response(status)
@@ -202,6 +203,8 @@ def test_post_commit_delivers_and_uses_token(repo, server):
     call = server.calls[0]  # type: ignore[attr-defined]
     assert call["path"] == "/worktracker/api/commits"
     assert call["auth"] == "Bearer hook-token"
+    assert call["user_agent"] == hook.USER_AGENT
+    assert "python-urllib" not in call["user_agent"].lower()
     assert call["body"]["sha"] == sha
     assert not hook.queue_file(str(repo)).exists()
 

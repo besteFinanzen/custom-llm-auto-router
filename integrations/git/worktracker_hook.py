@@ -35,7 +35,10 @@ import urllib.request
 from typing import TextIO, cast
 
 TIMEOUT = 8
-__version__ = "1.1.0"
+__version__ = "1.1.1"
+# Cloudflare (and similar WAFs) reject urllib's default ``Python-urllib/x.y``
+# user agent with HTTP 403 even when the token is valid, so identify ourselves.
+USER_AGENT = f"llm-auto-router-worktracker-hook/{__version__}"
 DEFAULT_MARKER = "# >>> worktracker hook >>>"
 
 
@@ -91,6 +94,8 @@ def request(base: str, token: str, path: str, payload: dict | None = None,
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(api_url(base, path), data=data, method=method)
     req.add_header("content-type", "application/json")
+    req.add_header("accept", "application/json")
+    req.add_header("user-agent", USER_AGENT)
     if token:
         req.add_header("authorization", f"Bearer {token}")
     try:
