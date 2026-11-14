@@ -629,6 +629,25 @@ class TrackerStore:
             self._conn.execute("DELETE FROM tracker_projects WHERE key = %s", (source,))
         return {"ok": True, "source": source, "target": target, "moved": moved}
 
+    def project_registry(self) -> list[dict]:
+        """Read-only canonical projects plus aliases for dashboard sync.
+
+        Cheap on purpose: the history dashboard calls this on every refresh and
+        only needs metadata, not the per-project usage rollups that
+        :meth:`list_projects` computes.
+        """
+        projects = self._fetchall(
+            "SELECT key, display_name, color, root_path, archived FROM tracker_projects "
+            "ORDER BY display_name, key")
+        if not projects:
+            return []
+        aliases: dict[str, list[str]] = {}
+        for row in self._fetchall(
+                "SELECT project_key, value FROM tracker_project_aliases ORDER BY kind, value"):
+            aliases.setdefault(row["project_key"], []).append(row["value"])
+        return [{**project, "aliases": aliases.get(project["key"], [])}
+                for project in projects]
+
     def list_projects(self, days: int = 0) -> list[dict]:
         self.sync_projects_from_usage()
         start = (dt.datetime.now(self.settings.tz).date() - dt.timedelta(days=days - 1)

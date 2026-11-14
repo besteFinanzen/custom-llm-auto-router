@@ -66,7 +66,7 @@
 <header>
   <div class="brand"><span class="dot" id="dot"></span> llm-auto-router <span class="sub">· history &amp; work</span></div>
   <div class="right">
-    <nav><a href="/dashboard">live</a><a class="active" href="/dashboard/history">history</a></nav>
+    <nav><a href="/dashboard">live</a><a class="active" href="/dashboard/history">history</a><a href="/worktracker">worktracker</a></nav>
     <span class="muted" id="updated">connecting…</span>
     <div id="token-prompt" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--muted)">
       <label>API token</label>
@@ -176,8 +176,16 @@ const metricValue = (row, metric) => {
 const metricText = (v, metric) => metric === 'cost' ? money(v) : metric === 'requests' ? String(+v || 0) : tok(v);
 const metricLabel = {tokens:'tokens/day', input:'input tokens/day', output:'output tokens/day', cost:'spend/day', requests:'requests/day'};
 const metricColor = {tokens:'#58a6ff', input:'#58a6ff', output:'#3fb950', cost:'#d29922', requests:'#bc8cff'};
-let days = 90, metric = 'tokens', project = '', lastData = null, loading = false;
+let days = 90, metric = 'tokens', lastData = null, loading = false;
+let project = new URLSearchParams(location.search).get('project') || '';
 let apiToken = sessionStorage.getItem('history.apiToken') || '';
+
+function syncUrl() {
+  const url = new URL(location.href);
+  if (project) url.searchParams.set('project', project);
+  else url.searchParams.delete('project');
+  history.replaceState(null, '', url);
+}
 
 function applyToken() {
   const el = $('#token-prompt');
@@ -266,13 +274,23 @@ function renderProjects(d) {
   const entries = d.projects || [];
   const sel = $('#project');
   const current = project;
-  sel.innerHTML = '<option value="">all projects</option>' + entries.map(p =>
-    `<option value="${esc(p.id)}" title="${esc(p.root || p.id)}">${esc(p.root || p.id)} · ${money(p.cost)}</option>`).join('');
+  sel.innerHTML = '<option value="">all projects</option>' + entries.map(p => {
+    const label = p.name || p.id;
+    const suffix = p.name && p.name !== p.id ? ` · ${p.id}` : '';
+    return `<option value="${esc(p.id)}" title="${esc(p.root || p.id)}">${esc(label + suffix)} · ${money(p.cost)}</option>`;
+  }).join('');
   sel.value = current;
   const rows = entries.map(p => {
     const active = current && (current === p.id || current === p.root);
+    const label = p.name || p.id;
+    const key = p.name && p.name !== p.id ? `<div class="muted" style="font-size:11px">${esc(p.id)}</div>` : '';
+    const dot = p.color
+      ? `<i aria-hidden="true" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${esc(p.color)};margin-right:6px"></i>`
+      : '';
+    const href = `/worktracker/#project/${encodeURIComponent(p.id)}`;
     return `<tr class="srow${active ? ' sel' : ''}" data-project="${esc(p.id)}">
-      <td class="model">${esc(p.id)}</td><td class="model muted" title="${esc(p.root || '')}">${esc(p.root || '—')}</td>
+      <td class="model">${dot}<a class="wt" href="${href}" title="Open ${esc(label)} in the worktracker">${esc(label)}</a>${key}</td>
+      <td class="model muted" title="${esc(p.root || '')}">${esc(p.root || '—')}</td>
       <td>${p.reqs || 0}</td><td>${tok(p.tokens)}</td><td class="${p.cost > 0 ? 'warn' : ''}">${money(p.cost)}</td>
       <td class="muted">${esc(dt(p.last_ts))}</td>
     </tr>`;
@@ -281,14 +299,22 @@ function renderProjects(d) {
   $('#projects').querySelectorAll('.srow').forEach(tr => {
     tr.onclick = () => {
       project = project === tr.dataset.project ? '' : tr.dataset.project;
+      syncUrl();
       load();
     };
+    tr.querySelectorAll('a.wt').forEach(a => { a.onclick = e => e.stopPropagation(); });
   });
-  $('#projects-meta').textContent = entries.length ? `${entries.length} projects · click to filter` : 'click to filter all statistics';
+  $('#projects-meta').textContent = entries.length
+    ? `${entries.length} projects · click to filter · names synced from the worktracker`
+    : 'click to filter all statistics';
 }
 
 function render(d) {
   lastData = d;
+  if (d.project && d.project !== project) {
+    project = d.project;
+    syncUrl();
+  }
   const at = d.all_time || {}, range = d.range || {}, tracked = d.tracked || {};
   $('#at-cost').textContent = money(at.cost);
   $('#at-cost-meta').textContent = tracked.since ? `since ${tracked.since}` : 'no tracking data';
@@ -305,7 +331,11 @@ function render(d) {
   $('#ai-time').textContent = secs((w.ai || {}).seconds);
   $('#ai-meta').textContent = `${(w.ai || {}).events || 0} events`;
   const scope = project ? `project ${project}` : 'all projects';
-  $('#range-note').textContent = `${scope} · ${days ? `last ${days} days` : 'all time'} · ${tracked.events || 0} tracked calls`;
+  const open = project
+    ? ` · <a href="/worktracker/#project/${encodeURIComponent(project)}">open in worktracker →</a>`
+    : '';
+  $('#range-note').innerHTML =
+    `${esc(scope)} · ${days ? `last ${days} days` : 'all time'} · ${tracked.events || 0} tracked calls${open}`;
   renderChart(d);
   renderSummary(range, `${days ? `last ${days} days` : 'all time'} · ${scope}`);
   renderWork(d.work);
@@ -357,7 +387,7 @@ $('#metric').onchange = e => {
   if (lastData) render(lastData);
   load();
 };
-$('#project').onchange = e => { project = e.target.value; load(); };
+$('#project').onchange = e => { project = e.target.value; syncUrl(); load(); };
 $('#refresh').onclick = load;
 load();
 setInterval(load, 15000);

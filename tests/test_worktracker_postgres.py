@@ -237,6 +237,34 @@ def test_heartbeats_presence_jobs_and_time_breakdown(store):
     assert store.rejected()[0]["missing"] == ["device"]
 
 
+def test_project_registry_exposes_canonical_metadata_and_aliases(store):
+    store.resolve_project("path:/repo/demo", root="/repo/demo",
+                          remote="git@github.com:acme/demo.git")
+    store.resolve_project("path:/repo/other", root="/repo/other")
+    store.rename_project("path:/repo/demo", "Demo", "#336699")
+    store.rename_project("path:/repo/other", "Other")
+    # Reporting the same checkout under a legacy key adopts the project and
+    # records the key as an alias.
+    store.resolve_project("legacy/demo", root="/repo/demo")
+
+    registry = store.project_registry()
+
+    assert [project["display_name"] for project in registry] == ["Demo", "Other"]
+    demo = registry[0]
+    assert demo["key"] == "path:/repo/demo"
+    assert demo["root_path"] == "/repo/demo"
+    assert demo["color"] == "#336699"
+    assert demo["archived"] is False
+    assert set(demo["aliases"]) >= {
+        "path:/repo/demo", "/repo/demo", "legacy/demo"}
+    assert any("acme/demo" in alias for alias in demo["aliases"])
+    assert set(registry[1]["aliases"]) >= {"path:/repo/other", "/repo/other"}
+
+
+def test_project_registry_is_empty_without_projects(store):
+    assert store.project_registry() == []
+
+
 @pytest.fixture
 def api(postgres_url, tmp_path):
     settings = _settings(postgres_url)
@@ -249,6 +277,14 @@ def api(postgres_url, tmp_path):
     run(client.aclose())
     db.clear()
     db.close()
+
+
+def test_worktracker_ui_links_back_to_dashboard(api):
+    _store, client = api
+    page = run(client.get("/worktracker"))
+    assert page.status_code == 200
+    assert 'href="/dashboard/history"' in page.text
+    assert "/dashboard/history?project=" in page.text
 
 
 def test_slash_safe_project_and_commit_routes_over_http(api):

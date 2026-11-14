@@ -12,6 +12,8 @@ import pytest
 
 from tests.conftest import build_client, run, write_catalog
 from tracker import PostgresUsage
+from worktracker.config import Settings
+from worktracker.store import TrackerStore
 
 TODAY = dt.date.today().isoformat()
 YESTERDAY = (dt.date.today() - dt.timedelta(days=1)).isoformat()
@@ -146,6 +148,8 @@ def test_gateway_usage_history_and_work_api(tmp_path, stub, monkeypatch, postgre
     db = PostgresUsage(postgres_url)
     db.clear()
     db.close()
+    tracker = TrackerStore(postgres_url, Settings(database_url=postgres_url))
+    tracker.clear()
     client = build_client(tmp_path)
     try:
         response = run(client.post("/v1/chat/completions", headers={
@@ -177,6 +181,20 @@ def test_gateway_usage_history_and_work_api(tmp_path, stub, monkeypatch, postgre
         assert history["days"] == 7
         assert history["metric"] == "tokens"
         assert len(history["daily"]) == 7
+
+        # The tracker owns display names and aliases; /v1/history mirrors them
+        # and canonicalizes a legacy key used by the dashboard URL.
+        tracker.rename_project("project-a", "Project A", "#336699")
+        tracker.resolve_project("legacy-a", root="/home/user/project-a")
+        synced = run(client.get("/v1/history", params={
+            "days": 7, "project": "legacy-a",
+        })).json()
+        assert synced["project"] == "project-a"
+        assert synced["range"]["reqs"] == 1
+        assert synced["projects"][0]["id"] == "project-a"
+        assert synced["projects"][0]["name"] == "Project A"
+        assert synced["projects"][0]["color"] == "#336699"
+
         assert run(client.get("/v1/history", params={"metric": "nope"})).status_code == 400
 
         result = run(client.post("/v1/work/events", json={
@@ -196,3 +214,5 @@ def test_gateway_usage_history_and_work_api(tmp_path, stub, monkeypatch, postgre
         db = PostgresUsage(postgres_url)
         db.clear()
         db.close()
+        tracker.clear()
+        tracker.close()

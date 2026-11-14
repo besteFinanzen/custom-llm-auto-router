@@ -84,6 +84,16 @@ Uncommitted work is shown as *uncommitted spend* and can be recomputed:
 Project and commit routes are query-addressed (`?key=…`) so project keys with
 slashes (e.g. `path:/repo/demo`) never break routing.
 
+## Dashboard sync
+
+The live dashboard (`/dashboard`), history dashboard (`/dashboard/history`) and
+worktracker (`/worktracker`) link to each other. `/v1/history` overlays the
+tracker registry on the raw usage rows, so renamed projects, colours and
+aliases appear consistently on both surfaces; projects that exist only in the
+tracker are included with zero usage. A dashboard project filter is resolved
+through `lookup_project()`, and the selection is kept in the page URL as
+`?project=…`, making project links from the worktracker shareable.
+
 ## Budgets
 
 Budgets are per project or branch, in USD (`cost_usd`), `tokens` or `requests`,

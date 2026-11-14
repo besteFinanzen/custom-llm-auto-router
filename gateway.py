@@ -440,6 +440,62 @@ def _json_all_time(rt: Runtime) -> dict:
     return total
 
 
+def _sync_history_projects(data: dict, registry: list[dict]) -> dict:
+    """Merge the tracker's canonical project registry into ``/v1/history``.
+
+    The history dashboard aggregates usage events directly, while project
+    names, colours and aliases live in the tracker registry.  Annotating the
+    usage rows with that metadata keeps both surfaces on the same project
+    identity; registry-only projects are included so a project created in the
+    tracker shows up on the dashboard immediately.
+    """
+    aliases: dict[str, dict] = {}
+    for project in registry:
+        aliases[str(project["key"])] = project
+        for value in project.get("aliases") or []:
+            aliases[str(value)] = project
+
+    merged: dict[str, dict] = {}
+
+    def blank(key: str, root: str | None = None) -> dict:
+        return {"id": key, "root": root, "in": 0, "out": 0, "tokens": 0,
+                "reqs": 0, "cost": 0.0, "last_ts": None}
+
+    for row in data.get("projects") or []:
+        raw = str(row.get("id") or "")
+        match = aliases.get(raw)
+        key = str(match["key"]) if match else raw
+        item = merged.setdefault(key, blank(key))
+        item["in"] += int(row.get("in") or 0)
+        item["out"] += int(row.get("out") or 0)
+        item["tokens"] += int(row.get("tokens") or
+                               (int(row.get("in") or 0) + int(row.get("out") or 0)))
+        item["reqs"] += int(row.get("reqs") or 0)
+        item["cost"] = round(item["cost"] + float(row.get("cost") or 0), 10)
+        last = row.get("last_ts")
+        if last and (item["last_ts"] is None or str(last) > str(item["last_ts"])):
+            item["last_ts"] = last
+        if not item["root"]:
+            item["root"] = row.get("root")
+
+    for project in registry:
+        key = str(project["key"])
+        item = merged.setdefault(key, blank(key, project.get("root_path")))
+        if not item["root"]:
+            item["root"] = project.get("root_path")
+        item["name"] = project.get("display_name") or key
+        item["color"] = project.get("color")
+        if project.get("archived"):
+            item["archived"] = True
+
+    data["projects"] = sorted(
+        merged.values(),
+        key=lambda item: (-float(item.get("cost") or 0),
+                          -int(item.get("reqs") or 0),
+                          str(item.get("name") or item.get("id") or "")))
+    return data
+
+
 def _discovery_status(rt: Runtime) -> dict:
     out = {"enabled": bool((rt.catalog.policy.get("discovery") or {}).get("enabled", True)),
            "models": len(rt.discovered)}
@@ -1022,7 +1078,22 @@ def create_app(config_dir: pathlib.Path | None = None,
                        "PostgreSQL tracking is disabled; set DATABASE_URL",
                        "tracking_unavailable")
         try:
-            return await asyncio.to_thread(rt.tracker.history, days, metric, project)
+            if project and rt.worktracker:
+                try:
+                    hit = await asyncio.to_thread(rt.worktracker.lookup_project, project)
+                except Exception:
+                    hit = None
+                if hit:
+                    project = hit["key"]
+            data = await asyncio.to_thread(rt.tracker.history, days, metric, project)
+            if rt.worktracker:
+                try:
+                    registry = await asyncio.to_thread(rt.worktracker.project_registry)
+                except Exception:
+                    registry = []
+                if registry:
+                    data = _sync_history_projects(data, registry)
+            return data
         except ValueError as exc:
             return err(400, str(exc), "bad_history_query")
         except Exception as exc:

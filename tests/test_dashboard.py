@@ -113,6 +113,7 @@ def test_dashboard_html(spend_client):
     assert "x-oc-session" in r.text
     assert 'id="all-cost"' in r.text and 'id="all-tokens"' in r.text
     assert 'id="all-reqs"' in r.text and "/dashboard/history" in r.text
+    assert 'href="/worktracker"' in r.text
 
 
 def test_history_dashboard_and_api_without_database(spend_client):
@@ -123,6 +124,7 @@ def test_history_dashboard_and_api_without_database(spend_client):
                   'id="providers"', 'id="presets"', 'id="models"'):
         assert field in r.text
     assert "/v1/history" in r.text
+    assert 'href="/worktracker"' in r.text
     response = run(spend_client.get("/v1/history"))
     assert response.status_code == 503
 

@@ -110,6 +110,7 @@
 <header>
   <span class="brand">Worktracker</span>
   <nav id="nav"></nav>
+  <a class="btn small" href="/dashboard/history" title="Open the usage and projects dashboard">Dashboard</a>
   <span class="spacer"></span>
   <span class="range" id="range"></span>
   <button class="btn small" id="refresh" title="Reload data">Reload</button>
@@ -492,7 +493,8 @@ views.project = async () => {
     '<div class="row" style="margin-bottom:14px"><h1 style="margin:0">' + esc(p.display_name || key) + "</h1>" +
     '<span class="pill">' + esc(key) + "</span>" +
     (p.repo_remote ? '<span class="pill">' + esc(p.repo_remote) + "</span>" : "") +
-    '<span class="right"></span><button class="btn small" id="rename">Rename</button></div>' +
+    '<span class="right"></span><a class="btn small" href="/dashboard/history?project=' + encodeURIComponent(key) + '" title="Open this project in the usage dashboard">Open in dashboard</a>' +
+    '<button class="btn small" id="rename">Rename</button></div>' +
     '<div class="grid" id="p" style="margin-bottom:14px"></div></div>');
   const grid = wrap.querySelector("#p");
   grid.appendChild(h('<div class="kpis">' + kpi("Cost", usd(t.cost), "AI spend in range") +
